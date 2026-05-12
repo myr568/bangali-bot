@@ -75,29 +75,36 @@ app.get('/webhook', (req, res) => {
 
 app.post('/webhook', (req, res) => {
     const body = req.body;
+
     if (body.object === 'page') {
         res.status(200).send('EVENT_RECEIVED');
+
         body.entry.forEach(async (entry) => {
-            const event = entry.messaging[0];
-            if (event.message && event.message.text) {
-                const sender_psid = event.sender.id;
-                const user_text = event.message.text;
+            const webhook_event = entry.messaging[0];
+            const sender_psid = webhook_event.sender.id;
 
-                // GET THE SMART REPLY
+            if (webhook_event.postback) {
+                const payload = webhook_event.postback.payload;
+                let responseText = "";
+
+                if (payload === 'LANG_EN') {
+                    responseText = "Welcome to Bangali Foundation! How can we help you today?\n\nYou can ask about:\n- Becoming a Beneficiary\n- Volunteering\n- Partnerships\n- Our Projects or Team";
+                } else if (payload === 'LANG_BN') {
+                    responseText = "বাঙালি ফাউন্ডেশনে আপনাকে স্বাগতম! আমরা আপনাকে কীভাবে সাহায্য করতে পারি?\n\nআপনি জিজ্ঞাসা করতে পারেন:\n- হিতাধিকারী হওয়া\n- স্বেচ্ছাসেবক\n- অংশীদারিত্ব\n- আমাদের প্রজেক্ট বা টিম";
+                } else if (payload === 'LANG_TR') {
+                    responseText = "Bangali Vakfı'na hoş geldiniz! Size nasıl yardımcı olabiliriz?\n\nŞunlar hakkında soru sorabilirsiniz:\n- Yararlanıcı Olmak\n- Gönüllülük\n- Ortaklıklar\n- Projelerimiz veya Ekibimiz";
+                } else if (payload === 'LANG_AR') {
+                    responseText = "مرحباً بكم في مؤسسة بنغالي! كيف يمكننا مساعدتكم اليوم؟\n\nيمكنك السؤال عن:\n- كيف تصبح مستفيداً\n- التطوع\n- الشراكات\n- مشاريعنا أو فريقنا";
+                }
+
+                await sendToMessenger(sender_psid, responseText);
+            } 
+            else if (webhook_event.message && webhook_event.message.text) {
+                const user_text = webhook_event.message.text;
                 const bot_reply = await getSmartReply(user_text);
-
-                // SEND TO MESSENGER
-                await axios.post(`https://graph.facebook.com/v17.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
-                    recipient: { id: sender_psid },
-                    message: { text: bot_reply }
-                });
-
-                // LOG THE INTERACTION
+                await sendToMessenger(sender_psid, bot_reply);
                 await logToSheet(sender_psid, user_text, bot_reply);
             }
         });
     }
 });
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🚀 Intelligent Bot live on ${PORT}`));

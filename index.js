@@ -24,29 +24,35 @@ async function getSmartReply(userMessage) {
         await client.authorize();
         const gsapi = google.sheets({ version: 'v4', auth: client });
         
-        // Fetch the FAQ tab data
         const response = await gsapi.spreadsheets.values.get({
             spreadsheetId: SPREADSHEET_ID,
-            range: 'FAQ!A2:B100', // Looking at Keywords and Responses
+            range: 'FAQ!A2:B200', 
         });
 
         const rows = response.data.values;
         if (rows && rows.length) {
-            // Check if any keyword exists inside the user's message
+            // Clean up the user's message (lowercase and remove extra spaces)
+            const cleanUserMsg = userMessage.toLowerCase().trim();
+
             for (const row of rows) {
-                const keyword = row[0].toLowerCase();
-                if (userMessage.toLowerCase().includes(keyword)) {
-                    return row[1]; // Return the matching response
+                if (!row[0] || !row[1]) continue;
+
+                const keyword = row[0].toLowerCase().trim();
+                const botResponse = row[1];
+
+                // Check if the user's message contains the keyword
+                if (cleanUserMsg.includes(keyword)) {
+                    return botResponse; 
                 }
             }
         }
-        // Fallback if no keyword is found
         return "Thank you for contacting Bangali Foundation. One of our team members will get back to you soon. For immediate help, type 'Help'.";
     } catch (error) {
         console.error('❌ Lookup Error:', error);
         return "I'm having trouble accessing my database. Please try again later.";
     }
 }
+
 
 async function logToSheet(psid, message, response) {
     try {

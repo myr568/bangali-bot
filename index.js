@@ -2,7 +2,8 @@ const express = require('express');
 const bodyParser = require('body-parser');
 const axios = require('axios');
 const { google } = require('googleapis');
-const keys = require('./credentials.json'); // Your Service Account Key
+const keys = JSON.parse(process.env.GOOGLE_CREDS);
+
 
 const app = express();
 app.use(bodyParser.json());

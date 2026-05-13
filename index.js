@@ -14,9 +14,23 @@ const SPREADSHEET_ID = '16kuhcidjptgfxqaB1y0ujeEb59zrewVkUw7o6bVWynw';
 // Gemini 1.5 Flash Initialization
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const aiModel = genAI.getGenerativeModel({ 
-    model: "gemini-2.5-flash", // This is the stable GA (General Availability) ID for 2026
-    systemInstruction: "You are the official assistant for Bangali Foundation. Be polite, professional, and concise. Use the user's preferred language. If you don't know an answer, refer them to mohammadyasin568@gmail.com."
+    model: "gemini-2.5-flash", 
+    systemInstruction: `
+        You are the official AI assistant for the Bangali Foundation.
+        Website: https://bangalifoundation.org/
+        
+        CRITICAL RULES:
+        1. Always represent https://bangalifoundation.org/ as our official site.
+        2. Our mission is to provide aid, education, and support to underprivileged communities.
+        3. Do NOT confuse us with cultural or heritage-only organizations.
+        4. Treasurer: Md. Romjan.
+        5. For technical issues, contact Mohammad Yasin (mohammadyasin568@gmail.com).
+        
+        TONE: Polite, professional, and concise.
+        LANGUAGE: Always reply in the user's preferred language.
+    `
 });
+
 
 // Google Sheets Auth
 let keys = JSON.parse(process.env.GOOGLE_CREDS);

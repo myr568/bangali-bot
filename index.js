@@ -2,104 +2,98 @@ const express = require('express');
 const bodyParser = require('body-parser');
 const axios = require('axios');
 const { google } = require('googleapis');
+const { GoogleGenerativeAI } = require("@google/generative-ai");
 
 const app = express();
 app.use(bodyParser.json());
 
+// --- CONFIGURATION ---
 const PAGE_ACCESS_TOKEN = process.env.PAGE_ACCESS_TOKEN;
 const SPREADSHEET_ID = '16kuhcidjptgfxqaB1y0ujeEb59zrewVkUw7o6bVWynw';
 
-let keys = JSON.parse(process.env.GOOGLE_CREDS);
+// Gemini 1.5 Flash Initialization
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+const aiModel = genAI.getGenerativeModel({ 
+    model: "gemini-1.5-flash",
+    systemInstruction: "You are the official assistant for Bangali Foundation. Be polite, professional, and concise. Use the user's preferred language. If you don't know an answer, refer them to mohammadyasin568@gmail.com."
+});
 
+// Google Sheets Auth
+let keys = JSON.parse(process.env.GOOGLE_CREDS);
 const client = new google.auth.JWT(
-    keys.client_email,
-    null,
-    keys.private_key,
+    keys.client_email, null, keys.private_key,
     ['https://www.googleapis.com/auth/spreadsheets']
 );
 
-// --- NEW: LOG USER LANGUAGE PREFERENCE ---
+// --- HELPER: GET USER LANGUAGE ---
+async function getUserLanguage(psid) {
+    try {
+        const gsapi = google.sheets({ version: 'v4', auth: client });
+        const response = await gsapi.spreadsheets.values.get({
+            spreadsheetId: SPREADSHEET_ID,
+            range: 'UserPrefs!A:B',
+        });
+        const rows = response.data.values;
+        if (rows) {
+            const userRow = rows.reverse().find(row => row[0] === psid);
+            return userRow ? userRow[1] : 'EN';
+        }
+    } catch (e) { return 'EN'; }
+}
+
+// --- LOG LANGUAGE SELECTION ---
 async function logLanguage(psid, lang) {
     try {
         const gsapi = google.sheets({ version: 'v4', auth: client });
-        // We'll append to a new tab called 'UserPrefs'
         await gsapi.spreadsheets.values.append({
             spreadsheetId: SPREADSHEET_ID,
             range: 'UserPrefs!A:B',
             valueInputOption: 'USER_ENTERED',
             resource: { values: [[psid, lang]] }
         });
-    } catch (e) { console.error("❌ Language logging failed", e); }
+    } catch (e) { console.error("Error logging language", e); }
 }
 
-// --- UPDATED: SEARCH FAQ TAB WITH LANGUAGE AWARENESS ---
+// --- CORE: SMART REPLY LOGIC ---
 async function getSmartReply(userMessage, psid) {
     try {
         await client.authorize();
         const gsapi = google.sheets({ version: 'v4', auth: client });
-        
-        // 1. Get FAQ Data
-        const faqResponse = await gsapi.spreadsheets.values.get({
+        const lang = await getUserLanguage(psid);
+
+        // 1. CHECK GOOGLE SHEET FAQ FIRST
+        const faqRes = await gsapi.spreadsheets.values.get({
             spreadsheetId: SPREADSHEET_ID,
-            range: 'FAQ!A2:B200', 
+            range: 'FAQ!A2:B500',
         });
-
-        // 2. Try to detect language from the text characters
-        let detectedLang = 'EN'; 
-        if (/[\u0980-\u09FF]/.test(userMessage)) detectedLang = 'BN';
-        if (/[çğıöşüİ]/.test(userMessage.toLowerCase())) detectedLang = 'TR';
-        if (/[\u0600-\u06FF]/.test(userMessage)) detectedLang = 'AR';
-
-        const rows = faqResponse.data.values;
-        if (rows && rows.length) {
-            const cleanUserMsg = userMessage.toLowerCase().trim();
-            for (const row of rows) {
-                if (!row[0] || !row[1]) continue;
-                const keyword = row[0].toLowerCase().trim();
-                if (cleanUserMsg.includes(keyword)) return row[1]; 
-            }
+        const rows = faqRes.data.values;
+        if (rows) {
+            const match = rows.find(row => userMessage.toLowerCase().includes(row[0].toLowerCase()));
+            if (match) return match[1];
         }
 
-        // 3. Fallback logic - only sends the language detected
-        const fallbacks = {
-            'EN': "I'm sorry, I didn't catch that. Try keywords like 'Volunteer', 'Donate', 'Apply' or 'Contact'.",
-            'BN': "দুঃখিত, আমি বুঝতে পারিনি। দয়া করে 'স্বেচ্ছাসেবক', 'দান', 'আবেদন' বা 'যোগাযোগ' এর মতো শব্দ ব্যবহার করুন।",
-            'TR': "Üzgünüm, anlayamadım. Lütfen 'Gönüllü', 'Bağış', 'Başvur' veya 'İletişim' gibi kelimeleri deneyin.",
-            'AR': "عذراً، لم أفهم ذلك. يرجى محاولة استخدام كلمات مثل 'متطوع' أو 'تبرع' أو 'تقديم' أو 'اتصال'."
-        };
-
-        return fallbacks[detectedLang] || fallbacks['EN'];
+        // 2. USE GEMINI 1.5 FLASH IF NO FAQ MATCH
+        const prompt = `User language: ${lang}. Context: Bangali Foundation NGO. User says: "${userMessage}"`;
+        const result = await aiModel.generateContent(prompt);
+        return result.response.text();
 
     } catch (error) {
-        console.error('❌ Lookup Error:', error);
-        return "I'm having trouble accessing my database.";
+        console.error('❌ AI/Sheet Error:', error);
+        return "I'm having a technical moment. Please try again or email us!";
     }
 }
 
-async function logToSheet(psid, message, response) {
-    try {
-        const gsapi = google.sheets({ version: 'v4', auth: client });
-        const timestamp = new Date().toLocaleString("en-US", {timeZone: "Asia/Dhaka"});
-        await gsapi.spreadsheets.values.append({
-            spreadsheetId: SPREADSHEET_ID,
-            range: 'Sheet1!A:D',
-            valueInputOption: 'USER_ENTERED',
-            resource: { values: [[timestamp, psid, message, response]] }
-        });
-    } catch (e) { console.error("Logging failed", e); }
-}
-
+// --- MESSENGER SENDING ---
 async function sendToMessenger(psid, text) {
     try {
-        await axios.post(`https://graph.facebook.com/v17.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
+        await axios.post(`https://graph.facebook.com/v20.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
             recipient: { id: psid },
             message: { text: text }
         });
-    } catch (e) {
-        console.error("❌ Messenger API Error:", e.response ? e.response.data : e.message);
-    }
+    } catch (e) { console.error("Messenger Post Error"); }
 }
 
+// --- WEBHOOKS ---
 app.get('/webhook', (req, res) => {
     if (req.query['hub.verify_token'] === 'bangali_foundation_2026') {
         res.send(req.query['hub.challenge']);
@@ -112,41 +106,30 @@ app.post('/webhook', (req, res) => {
         res.status(200).send('EVENT_RECEIVED');
         body.entry.forEach(async (entry) => {
             if (!entry.messaging) return;
-            const webhook_event = entry.messaging[0];
-            const sender_psid = webhook_event.sender.id;
+            const event = entry.messaging[0];
+            const psid = event.sender.id;
 
-            if (webhook_event.postback) {
-                const payload = webhook_event.postback.payload;
-                let responseText = "";
-                let selectedLang = "EN";
-
-                if (payload === 'LANG_EN') {
-                    responseText = "Welcome to Bangali Foundation! How can we help you today?\n\nYou can ask about:\n- Becoming a Beneficiary\n- Volunteering\n- Partnerships\n- Our Projects or Team";
-                    selectedLang = "EN";
-                } else if (payload === 'LANG_BN') {
-                    responseText = "বাঙালি ফাউন্ডেশনে আপনাকে স্বাগতম! আমরা আপনাকে কীভাবে সাহায্য করতে পারি?\n\nআপনি জিজ্ঞাসা করতে পারেন:\n- হিতাধিকারী হওয়া\n- স্বেচ্ছাসেবক\n- অংশীদারিত্ব\n- আমাদের প্রজেক্ট বা টিম";
-                    selectedLang = "BN";
-                } else if (payload === 'LANG_TR') {
-                    responseText = "Bangali Vakfı'na hoş geldiniz! Size nasıl yardımcı olabiliriz?\n\nŞunlar hakkında soru sorabilirsiniz:\n- Yararlanıcı Olmak\n- Gönüllülük\n- Ortaklıklar\n- Projelerimiz veya Ekibimiz";
-                    selectedLang = "TR";
-                } else if (payload === 'LANG_AR') {
-                    responseText = "مرحباً بكم في مؤسسة بنغالي! كيف يمكننا مساعدتكم اليوم؟\n\nيمكنك السؤال عن:\n- كيف تصبح مستفيداً\n- التطوع\n- الشراكات\n- مشاريعنا أو فريقنا";
-                    selectedLang = "AR";
-                }
+            if (event.postback) {
+                const payload = event.postback.payload;
+                const langMap = { 'LANG_EN': 'EN', 'LANG_BN': 'BN', 'LANG_TR': 'TR', 'LANG_AR': 'AR' };
+                const selected = langMap[payload] || 'EN';
+                await logLanguage(psid, selected);
                 
-                await logLanguage(sender_psid, selectedLang); // SAVE CHOICE
-                await sendToMessenger(sender_psid, responseText);
+                const welcome = {
+                    'EN': "Welcome to Bangali Foundation! How can we help?",
+                    'BN': "বাঙালি ফাউন্ডেশনে স্বাগতম! আমরা কীভাবে সাহায্য করতে পারি?",
+                    'TR': "Bangali Vakfı'na hoş geldiniz! Nasıl yardımcı olabiliriz?",
+                    'AR': "مرحباً بكم في مؤسسة بنغالي! كيف يمكننا مساعدتكم؟"
+                };
+                await sendToMessenger(psid, welcome[selected]);
             } 
-            else if (webhook_event.message && webhook_event.message.text) {
-                const user_text = webhook_event.message.text;
-                // PASS sender_psid to getSmartReply
-                const bot_reply = await getSmartReply(user_text, sender_psid);
-                await sendToMessenger(sender_psid, bot_reply);
-                await logToSheet(sender_psid, user_text, bot_reply);
+            else if (event.message && event.message.text) {
+                const reply = await getSmartReply(event.message.text, psid);
+                await sendToMessenger(psid, reply);
             }
         });
     }
 });
 
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => console.log(`🚀 Bot live on ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Bangali Bot with Gemini 1.5 Flash is Live!`));

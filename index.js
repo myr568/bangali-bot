@@ -14,7 +14,7 @@ const SPREADSHEET_ID = '16kuhcidjptgfxqaB1y0ujeEb59zrewVkUw7o6bVWynw';
 // Gemini 1.5 Flash Initialization
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const aiModel = genAI.getGenerativeModel({ 
-    model: "gemini-3-flash-001", // Added the version suffix
+    model: "gemini-2.5-flash", // This is the stable GA (General Availability) ID for 2026
     systemInstruction: "You are the official assistant for Bangali Foundation. Be polite, professional, and concise. Use the user's preferred language. If you don't know an answer, refer them to mohammadyasin568@gmail.com."
 });
 
@@ -56,14 +56,14 @@ async function logLanguage(psid, lang) {
 
 
 
-// --- CORE: SMART REPLY LOGIC ---
+
 async function getSmartReply(userMessage, psid) {
     try {
         await client.authorize();
         const gsapi = google.sheets({ version: 'v4', auth: client });
         const lang = await getUserLanguage(psid);
 
-        // 1. FAQ Check (Works fine)
+        // 1. Check FAQ
         const faqRes = await gsapi.spreadsheets.values.get({
             spreadsheetId: SPREADSHEET_ID,
             range: 'FAQ!A2:B500',
@@ -74,24 +74,18 @@ async function getSmartReply(userMessage, psid) {
             if (match) return match[1];
         }
 
-        // USE THIS simplified AI call inside your getSmartReply function
+        // 2. AI Call with Gemini 2.5 Flash
         const result = await aiModel.generateContent(`User Language: ${lang}. Message: ${userMessage}`);
         const response = await result.response;
-            return response.text();
-
-
-        
-        // Final safety check: if AI returns empty
-        return text && text.length > 0 ? text : "I understand you, but I'm having trouble phrasing a reply. Please try again!";
+        return response.text();
 
     } catch (error) {
-        // This log will tell us EXACTLY why it's failing in Render Logs
-        console.error('--- GEMINI ERROR DETAIL ---');
-        console.error(error.message); 
+        console.error('--- ERROR LOG ---');
+        console.error('Status Code:', error.status);
+        console.error('Message:', error.message);
         return "I'm having a technical moment. Please try again or email us!";
     }
 }
-
 
 
 // --- MESSENGER SENDING ---

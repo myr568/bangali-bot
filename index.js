@@ -54,6 +54,8 @@ async function logLanguage(psid, lang) {
     } catch (e) { console.error("Error logging language", e); }
 }
 
+
+
 // --- CORE: SMART REPLY LOGIC ---
 async function getSmartReply(userMessage, psid) {
     try {
@@ -61,7 +63,7 @@ async function getSmartReply(userMessage, psid) {
         const gsapi = google.sheets({ version: 'v4', auth: client });
         const lang = await getUserLanguage(psid);
 
-        // 1. CHECK GOOGLE SHEET FAQ FIRST
+        // 1. FAQ Check (Works fine)
         const faqRes = await gsapi.spreadsheets.values.get({
             spreadsheetId: SPREADSHEET_ID,
             range: 'FAQ!A2:B500',
@@ -72,16 +74,26 @@ async function getSmartReply(userMessage, psid) {
             if (match) return match[1];
         }
 
-        // 2. USE GEMINI 1.5 FLASH IF NO FAQ MATCH
-        const prompt = `User language: ${lang}. Context: Bangali Foundation NGO. User says: "${userMessage}"`;
-        const result = await aiModel.generateContent(prompt);
-        return result.response.text();
+        // 2. STABILITY FIX: Added specific parts structure for Gemini 1.5
+        const result = await aiModel.generateContent({
+            contents: [{ role: 'user', parts: [{ text: `Language: ${lang}. User: ${userMessage}` }] }],
+        });
+
+        const response = await result.response;
+        const text = response.text();
+        
+        // Final safety check: if AI returns empty
+        return text && text.length > 0 ? text : "I understand you, but I'm having trouble phrasing a reply. Please try again!";
 
     } catch (error) {
-        console.error('❌ AI/Sheet Error:', error);
+        // This log will tell us EXACTLY why it's failing in Render Logs
+        console.error('--- GEMINI ERROR DETAIL ---');
+        console.error(error.message); 
         return "I'm having a technical moment. Please try again or email us!";
     }
 }
+
+
 
 // --- MESSENGER SENDING ---
 async function sendToMessenger(psid, text) {

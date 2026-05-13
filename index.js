@@ -14,7 +14,7 @@ const SPREADSHEET_ID = '16kuhcidjptgfxqaB1y0ujeEb59zrewVkUw7o6bVWynw';
 // Gemini 1.5 Flash Initialization
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const aiModel = genAI.getGenerativeModel({ 
-    model: "gemini-3-flash", 
+    model: "gemini-3-flash-001", // Added the version suffix
     systemInstruction: "You are the official assistant for Bangali Foundation. Be polite, professional, and concise. Use the user's preferred language. If you don't know an answer, refer them to mohammadyasin568@gmail.com."
 });
 
@@ -74,13 +74,12 @@ async function getSmartReply(userMessage, psid) {
             if (match) return match[1];
         }
 
-        // 2. STABILITY FIX: Added specific parts structure for Gemini 1.5
-        const result = await aiModel.generateContent({
-            contents: [{ role: 'user', parts: [{ text: `Language: ${lang}. User: ${userMessage}` }] }],
-        });
-
+        // USE THIS simplified AI call inside your getSmartReply function
+        const result = await aiModel.generateContent(`User Language: ${lang}. Message: ${userMessage}`);
         const response = await result.response;
-        const text = response.text();
+            return response.text();
+
+
         
         // Final safety check: if AI returns empty
         return text && text.length > 0 ? text : "I understand you, but I'm having trouble phrasing a reply. Please try again!";

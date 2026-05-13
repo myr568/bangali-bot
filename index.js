@@ -38,7 +38,12 @@ async function getSmartReply(userMessage) {
                 if (cleanUserMsg.includes(keyword)) return botResponse; 
             }
         }
-        return "Thank you for contacting Bangali Foundation. One of our team members will get back to you soon. For immediate help, type 'Help'.";
+
+        return "I'm sorry, I didn't catch that. Try keywords like 'Volunteer', 'Donate', 'Apply' or 'Contact'.\n\n" +
+               "দুঃখিত, আমি বুঝতে পারিনি। দয়া করে 'স্বেচ্ছাসেবক', 'দান', 'আবেদন' বা 'যোগাযোগ' এর মতো শব্দ ব্যবহার করুন।\n\n" +
+               "Üzgünüm, anlayamadım. Lütfen 'Gönüllü', 'Bağış', 'Başvur' veya 'İletişim' gibi kelimeleri deneyin.\n\n" +
+               "عذراً، لم أفهم ذلك. يرجى محاولة استخدام كلمات مثل 'متطوع' أو 'تبرع' أو 'تقديم' أو 'اتصال'.";
+
     } catch (error) {
         console.error('❌ Lookup Error:', error);
         return "I'm having trouble accessing my database. Please try again later.";

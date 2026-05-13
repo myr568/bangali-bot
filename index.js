@@ -14,7 +14,7 @@ const SPREADSHEET_ID = '16kuhcidjptgfxqaB1y0ujeEb59zrewVkUw7o6bVWynw';
 // Gemini 1.5 Flash Initialization
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const aiModel = genAI.getGenerativeModel({ 
-    model: "gemini-1.5-flash",
+    model: "gemini-3-flash", 
     systemInstruction: "You are the official assistant for Bangali Foundation. Be polite, professional, and concise. Use the user's preferred language. If you don't know an answer, refer them to mohammadyasin568@gmail.com."
 });
 

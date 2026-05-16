@@ -96,7 +96,25 @@ async function logUnlockedUser(psid) {
     } catch (e) { console.error("Error logging unlocked user", e); }
 }
 
-// --- GLOBAL REUSABLE VERTICAL MENU FUNCTION (POSTBACK BASED) ---
+// --- GLOBAL REUSABLE LANGUAGE SELECTOR (QUICK REPLIES - ALL 4 TOGETHER) ---
+async function sendLanguageSelector(psid, textPrompt) {
+    try {
+        await axios.post(`https://graph.facebook.com/v20.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
+            recipient: { id: psid },
+            message: {
+                text: textPrompt,
+                quick_replies: [
+                    { content_type: "text", title: "English 🇬🇧", payload: "LANG_EN" },
+                    { content_type: "text", title: "বাংলা 🇧🇩", payload: "LANG_BN" },
+                    { content_type: "text", title: "Türkçe 🇹🇷", payload: "LANG_TR" },
+                    { content_type: "text", title: "العربية 🇸🇦", payload: "LANG_AR" }
+                ]
+            }
+        });
+    } catch (e) { console.error("Error sending language selection Quick Replies menu"); }
+}
+
+// --- GLOBAL REUSABLE VERTICAL MENU FUNCTION (STACKED CARDS) ---
 async function sendVerticalMenu(psid, selectedLang) {
     const lang = selectedLang || 'EN';
     
@@ -120,7 +138,7 @@ async function sendVerticalMenu(psid, selectedLang) {
     try {
         await sendToMessenger(psid, currentLang.welcome);
 
-        // Card 1 (Now type: postback)
+        // Card 1
         await axios.post(`https://graph.facebook.com/v20.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
             recipient: { id: psid },
             message: {
@@ -139,7 +157,7 @@ async function sendVerticalMenu(psid, selectedLang) {
             }
         });
 
-        // Card 2 (Now type: postback)
+        // Card 2
         await axios.post(`https://graph.facebook.com/v20.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
             recipient: { id: psid },
             message: {
@@ -213,46 +231,15 @@ app.post('/webhook', (req, res) => {
             const event = entry.messaging[0];
             const psid = event.sender.id;
 
-            // --- 1. HANDLE POSTBACK EVENTS (Menu Clicks, Language, Get Started) ---
-            if (event.postback) {
-                const payload = event.postback.payload;
+            // --- 1. HANDLE QUICK REPLIES & POSTBACK EVENTS ---
+            let payload = null;
+            if (event.postback) payload = event.postback.payload;
+            if (event.message && event.message.quick_reply) payload = event.message.quick_reply.payload;
 
+            if (payload) {
                 // Scenario A: Get Started click
                 if (payload === 'GET_STARTED_PAYLOAD') {
-                    try {
-                        await axios.post(`https://graph.facebook.com/v20.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
-                            recipient: { id: psid },
-                            message: {
-                                attachment: {
-                                    type: "template",
-                                    payload: {
-                                        template_type: "button",
-                                        text: "Please select your preferred language / অনুগ্রহ করে আপনার পছন্দের ভাষা নির্বাচন করুন:",
-                                        buttons: [
-                                            { type: "postback", title: "English 🇬🇧", payload: "LANG_EN" },
-                                            { type: "postback", title: "বাংলা 🇧🇩", payload: "LANG_BN" },
-                                            { type: "postback", title: "Türkçe 🇹🇷", payload: "LANG_TR" }
-                                        ]
-                                    }
-                                }
-                            }
-                        });
-                        await axios.post(`https://graph.facebook.com/v20.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
-                            recipient: { id: psid },
-                            message: {
-                                attachment: {
-                                    type: "template",
-                                    payload: {
-                                        template_type: "button",
-                                        text: "More Options:",
-                                        buttons: [
-                                            { type: "postback", title: "العربية 🇸🇦", payload: "LANG_AR" }
-                                        ]
-                                    }
-                                }
-                            }
-                        });
-                    } catch (e) { console.error("Error sending language layout content."); }
+                    await sendLanguageSelector(psid, "Please select your preferred language / অনুগ্রহ করে আপনার পছন্দের ভাষা নির্বাচন করুন:");
                 } 
                 // Scenario B: Language Chosen
                 else if (payload.startsWith('LANG_')) {
@@ -261,7 +248,7 @@ app.post('/webhook', (req, res) => {
                     await logLanguage(psid, selected);
                     await sendVerticalMenu(psid, selected);
                 }
-                // Scenario C: Menu Options Clicked (Unlocks Chat, Sends Link in Log)
+                // Scenario C: Menu Options Clicked
                 else if (payload.startsWith('CLICK_')) {
                     const lang = await getUserLanguage(psid) || 'EN';
                     
@@ -300,11 +287,8 @@ app.post('/webhook', (req, res) => {
 
                     const textReply = optionLinks[payload][lang] || optionLinks[payload]['EN'];
                     await sendToMessenger(psid, textReply);
-                    
-                    // Mark user as unlocked in Sheet
                     await logUnlockedUser(psid);
                     
-                    // Inform them they can talk freely now
                     const unlockAlert = {
                         'EN': "🔒 Menu Completed! You can now ask any question or type freely to talk with our assistant.",
                         'BN': "🔒 মেনু সম্পন্ন হয়েছে! এখন আপনি যেকোনো প্রশ্ন জিজ্ঞাসা করতে পারেন বা আমাদের সহকারীর সাথে চ্যাট করতে পারেন।",
@@ -322,31 +306,13 @@ app.post('/webhook', (req, res) => {
 
                 // Gatekeeper A: No language selected yet
                 if (!lang) {
-                    try {
-                        await axios.post(`https://graph.facebook.com/v20.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
-                            recipient: { id: psid },
-                            message: {
-                                attachment: {
-                                    type: "template",
-                                    payload: {
-                                        template_type: "button",
-                                        text: "Please choose your language first / কথোপকথন শুরু করতে প্রথমে ভাষা নির্বাচন করুন:",
-                                        buttons: [
-                                            { type: "postback", title: "English 🇬🇧", payload: "LANG_EN" },
-                                            { type: "postback", title: "বাংলা 🇧🇩", payload: "LANG_BN" },
-                                            { type: "postback", title: "Türkçe 🇹🇷", payload: "LANG_TR" }
-                                        ]
-                                    }
-                                }
-                            }
-                        });
-                    } catch (err) { console.error("Gatekeeper intercept tracking error"); }
+                    await sendLanguageSelector(psid, "Please choose your language first to unlock options / কথোপকথন শুরু করতে প্রথমে ভাষা নির্বাচন করুন:");
                 } 
                 // Gatekeeper B: Has language, but hasn't clicked an option yet
                 else if (!isUnlocked) {
                     await sendVerticalMenu(psid, lang);
                 } 
-                // Passed Gatekeeper: Let them talk seamlessly via Sheet FAQ or Gemini
+                // Passed Gatekeeper: Normal Chat Mode
                 else {
                     const reply = await getSmartReply(event.message.text, psid, lang);
                     await sendToMessenger(psid, reply);
@@ -357,4 +323,4 @@ app.post('/webhook', (req, res) => {
 });
 
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => console.log(`🚀 Bangali Bot with Smart Unlocking Mode is Live!`));
+app.listen(PORT, () => console.log(`🚀 Bangali Bot with Unified 4-Language Selector is Live!`));

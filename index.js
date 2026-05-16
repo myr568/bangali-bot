@@ -177,7 +177,11 @@ async function sendVerticalMenu(psid, selectedLang) {
     } catch (err) { console.error("Error sending vertical menu layout stacks"); }
 }
 
-// --- CORE: SMART REPLY LOGIC ---
+
+
+
+
+// --- CORE: SMART REPLY LOGIC WITH AUTOMATIC USAGE LOGGING ---
 async function getSmartReply(userMessage, psid, lang) {
     try {
         await client.authorize();
@@ -191,19 +195,44 @@ async function getSmartReply(userMessage, psid, lang) {
         const rows = faqRes.data.values;
         if (rows) {
             const match = rows.find(row => userMessage.toLowerCase().includes(row[0].toLowerCase()));
-            if (match) return match[1];
+            if (match) return match[1]; // Returns FAQ answer (Doesn't use Gemini API)
         }
 
         // 2. AI Call with Gemini 2.5 Flash
         const result = await aiModel.generateContent(`User Language: ${lang}. Message: ${userMessage}`);
         const response = await result.response;
-        return response.text();
+        const aiText = response.text();
+
+        // 3. AUTOMATICALLY LOG THIS GEMINI CALL TO YOUR SHEET
+        try {
+            const bangladeshTime = new Date().toLocaleString("en-US", { timeZone: "Asia/Dhaka" });
+            await gsapi.spreadsheets.values.append({
+                spreadsheetId: SPREADSHEET_ID,
+                range: 'BotUsageLog!A:C',
+                valueInputOption: 'USER_ENTERED',
+                resource: { 
+                    values: [[
+                        bangladeshTime, 
+                        psid, 
+                        "Gemini Call"
+                    ]] 
+                }
+            });
+        } catch (logError) { 
+            console.error("Failed to write to BotUsageLog tab:", logError); 
+        }
+
+        return aiText;
 
     } catch (error) {
         console.error('--- ERROR LOG ---');
         return "I'm having a technical moment. Please try again or email us!";
     }
 }
+
+
+
+
 
 // --- MESSENGER SENDING ---
 async function sendToMessenger(psid, text) {

@@ -49,7 +49,7 @@ async function getUserLanguage(psid) {
         const rows = response.data.values;
         if (rows) {
             const userRow = rows.reverse().find(row => row[0] === psid);
-            return userRow ? userRow[1] : null; // Returns null if no language choice is registered yet
+            return userRow ? userRow[1] : null;
         }
     } catch (e) { return null; }
 }
@@ -67,7 +67,36 @@ async function logLanguage(psid, lang) {
     } catch (e) { console.error("Error logging language", e); }
 }
 
-// --- GLOBAL REUSABLE VERTICAL MENU FUNCTION ---
+// --- HELPER: CHECK IF USER IS UNLOCKED ---
+async function checkUserUnlocked(psid) {
+    try {
+        const gsapi = google.sheets({ version: 'v4', auth: client });
+        const response = await gsapi.spreadsheets.values.get({
+            spreadsheetId: SPREADSHEET_ID,
+            range: 'UnlockedUsers!A:A',
+        });
+        const rows = response.data.values;
+        if (rows) {
+            return rows.some(row => row[0] === psid);
+        }
+        return false;
+    } catch (e) { return false; }
+}
+
+// --- HELPER: LOG UNLOCKED USER ---
+async function logUnlockedUser(psid) {
+    try {
+        const gsapi = google.sheets({ version: 'v4', auth: client });
+        await gsapi.spreadsheets.values.append({
+            spreadsheetId: SPREADSHEET_ID,
+            range: 'UnlockedUsers!A:A',
+            valueInputOption: 'USER_ENTERED',
+            resource: { values: [[psid]] }
+        });
+    } catch (e) { console.error("Error logging unlocked user", e); }
+}
+
+// --- GLOBAL REUSABLE VERTICAL MENU FUNCTION (POSTBACK BASED) ---
 async function sendVerticalMenu(psid, selectedLang) {
     const lang = selectedLang || 'EN';
     
@@ -89,13 +118,9 @@ async function sendVerticalMenu(psid, selectedLang) {
     const labels = translations[lang];
 
     try {
-        // Text Alert
-        await axios.post(`https://graph.facebook.com/v20.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
-            recipient: { id: psid },
-            message: { text: currentLang.welcome }
-        });
+        await sendToMessenger(psid, currentLang.welcome);
 
-        // Card 1
+        // Card 1 (Now type: postback)
         await axios.post(`https://graph.facebook.com/v20.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
             recipient: { id: psid },
             message: {
@@ -105,16 +130,16 @@ async function sendVerticalMenu(psid, selectedLang) {
                         template_type: "button",
                         text: currentLang.card1,
                         buttons: [
-                            { type: "web_url", url: "https://bangalifoundation.org/support-us/", title: labels.donate },
-                            { type: "web_url", url: "https://bangalifoundation.org/become-a-volunteer/", title: labels.volunteer },
-                            { type: "web_url", url: "https://bangalifoundation.org/become-a-beneficiary/", title: labels.aid }
+                            { type: "postback", title: labels.donate, payload: "CLICK_DONATE" },
+                            { type: "postback", title: labels.volunteer, payload: "CLICK_VOLUNTEER" },
+                            { type: "postback", title: labels.aid, payload: "CLICK_AID" }
                         ]
                     }
                 }
             }
         });
 
-        // Card 2
+        // Card 2 (Now type: postback)
         await axios.post(`https://graph.facebook.com/v20.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
             recipient: { id: psid },
             message: {
@@ -124,8 +149,8 @@ async function sendVerticalMenu(psid, selectedLang) {
                         template_type: "button",
                         text: currentLang.card2,
                         buttons: [
-                            { type: "web_url", url: "https://bangalifoundation.org/become-a-partner/", title: labels.partner },
-                            { type: "web_url", url: "https://bangalifoundation.org/our-initiatives/", title: labels.projects }
+                            { type: "postback", title: labels.partner, payload: "CLICK_PARTNER" },
+                            { type: "postback", title: labels.projects, payload: "CLICK_PROJECTS" }
                         ]
                     }
                 }
@@ -188,10 +213,11 @@ app.post('/webhook', (req, res) => {
             const event = entry.messaging[0];
             const psid = event.sender.id;
 
-            // --- 1. HANDLE POSTBACK EVENTS (Language Selection / Get Started) ---
+            // --- 1. HANDLE POSTBACK EVENTS (Menu Clicks, Language, Get Started) ---
             if (event.postback) {
                 const payload = event.postback.payload;
 
+                // Scenario A: Get Started click
                 if (payload === 'GET_STARTED_PAYLOAD') {
                     try {
                         await axios.post(`https://graph.facebook.com/v20.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
@@ -226,25 +252,76 @@ app.post('/webhook', (req, res) => {
                                 }
                             }
                         });
-                    } catch (e) { console.error("Error displaying main language options layout block"); }
+                    } catch (e) { console.error("Error sending language layout content."); }
                 } 
-                else {
+                // Scenario B: Language Chosen
+                else if (payload.startsWith('LANG_')) {
                     const langMap = { 'LANG_EN': 'EN', 'LANG_BN': 'BN', 'LANG_TR': 'TR', 'LANG_AR': 'AR' };
                     const selected = langMap[payload] || 'EN';
                     await logLanguage(psid, selected);
-                    
-                    // Show them the vertical stack option sheets instantly 
                     await sendVerticalMenu(psid, selected);
+                }
+                // Scenario C: Menu Options Clicked (Unlocks Chat, Sends Link in Log)
+                else if (payload.startsWith('CLICK_')) {
+                    const lang = await getUserLanguage(psid) || 'EN';
+                    
+                    const optionLinks = {
+                        'CLICK_DONATE': {
+                            'EN': "Thank you for your generosity! Click here to make a donation directly: https://bangalifoundation.org/support-us/",
+                            'BN': "আপনার উদারতার জন্য ধন্যবাদ! সরাসরি দান করতে এখানে ক্লিক করুন: https://bangalifoundation.org/support-us/",
+                            'TR': "Cömertliğiniz için teşekkür ederiz! Doğrudan bağış yapmak için buraya tıklayın: https://bangalifoundation.org/support-us/",
+                            'AR': "شكراً لكرمك! انقر هنا لتقديم التبرع مباشرة: https://bangalifoundation.org/support-us/"
+                        },
+                        'CLICK_VOLUNTEER': {
+                            'EN': "Click the link https://bangalifoundation.org/become-a-volunteer/ to fill up the form to be our volunteer.",
+                            'BN': "আমাদের স্বেচ্ছাসেবক হতে ফর্মটি পূরণ করতে এই লিঙ্কে ক্লিক করুন: https://bangalifoundation.org/become-a-volunteer/",
+                            'TR': "Gönüllümüz olmak üzere formu doldurmak için şu bağlantıya tıklayın: https://bangalifoundation.org/become-a-volunteer/",
+                            'AR': "انقر على الرابط لتعبئة النموذج لتصبح متطوعاً معنا: https://bangalifoundation.org/become-a-volunteer/"
+                        },
+                        'CLICK_AID': {
+                            'EN': "Click the link https://bangalifoundation.org/become-a-beneficiary/ to become a beneficiary.",
+                            'BN': "সুবিধাভোগী বা সাহায্য পেতে এই লিঙ্কে ক্লিক করে আবেদন করুন: https://bangalifoundation.org/become-a-beneficiary/",
+                            'TR': "Yararlanıcı (yardım alan) olmak için şu bağlantıya tıklayın: https://bangalifoundation.org/become-a-beneficiary/",
+                            'AR': "انقر على الرابط لتصبح مستفيداً من المساعدات: https://bangalifoundation.org/become-a-beneficiary/"
+                        },
+                        'CLICK_PARTNER': {
+                            'EN': "Fill in the form in the following link to become a partner: https://bangalifoundation.org/become-a-partner/",
+                            'BN': "আমাদের পার্টনার বা সহযোগী হতে এই লিঙ্কের ফর্মটি পূরণ করুন: https://bangalifoundation.org/become-a-partner/",
+                            'TR': "Ortak veya paydaş olmak için aşağıdaki bağlantıda yer alan formu doldurun: https://bangalifoundation.org/become-a-partner/",
+                            'AR': "يرجى تعبئة النموذج الموجود في الرابط التالي لتصبح شريكاً لنا: https://bangalifoundation.org/become-a-partner/"
+                        },
+                        'CLICK_PROJECTS': {
+                            'EN': "Click here to learn all about our current projects and initiatives: https://bangalifoundation.org/our-initiatives/",
+                            'BN': "আমাদের চলমান প্রকল্প ও উদ্যোগগুলি সম্পর্কে জানতে এখানে ক্লিক করুন: https://bangalifoundation.org/our-initiatives/",
+                            'TR': "Mevcut projelerimiz ve girişimlerimiz hakkında bilgi edinmek için buraya tıklayın: https://bangalifoundation.org/our-initiatives/",
+                            'AR': "انقر هنا للتعرف على جميع مشاريعنا ومبادراتنا الحالية: https://bangalifoundation.org/our-initiatives/"
+                        }
+                    };
+
+                    const textReply = optionLinks[payload][lang] || optionLinks[payload]['EN'];
+                    await sendToMessenger(psid, textReply);
+                    
+                    // Mark user as unlocked in Sheet
+                    await logUnlockedUser(psid);
+                    
+                    // Inform them they can talk freely now
+                    const unlockAlert = {
+                        'EN': "🔒 Menu Completed! You can now ask any question or type freely to talk with our assistant.",
+                        'BN': "🔒 মেনু সম্পন্ন হয়েছে! এখন আপনি যেকোনো প্রশ্ন জিজ্ঞাসা করতে পারেন বা আমাদের সহকারীর সাথে চ্যাট করতে পারেন।",
+                        'TR': "🔒 Menü Tamamlandı! Artık asistanımızla konuşmak için istediğiniz soruyu sorabilir veya serbestçe yazabilirsiniz.",
+                        'AR': "🔒 اكتملت القائمة! يمكنك الآن طرح أي سؤال أو الكتابة بحرية للتحدث مع مساعدنا."
+                    };
+                    await sendToMessenger(psid, unlockAlert[lang]);
                 }
             } 
             
-            // --- 2. HANDLE TEXT INPUT MESSAGES (Gatekeeping Added) ---
+            // --- 2. HANDLE TEXT INPUT MESSAGES ---
             else if (event.message && event.message.text) {
                 const lang = await getUserLanguage(psid);
+                const isUnlocked = await checkUserUnlocked(psid);
 
-                // GATEKEEPER: If user hasn't completed language choice or tries to chat without clicking buttons
+                // Gatekeeper A: No language selected yet
                 if (!lang) {
-                    // Send them back to the start workflow
                     try {
                         await axios.post(`https://graph.facebook.com/v20.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
                             recipient: { id: psid },
@@ -253,7 +330,7 @@ app.post('/webhook', (req, res) => {
                                     type: "template",
                                     payload: {
                                         template_type: "button",
-                                        text: "Please choose your language first to unlock options / কথোপকথন শুরু করতে প্রথমে ভাষা নির্বাচন করুন:",
+                                        text: "Please choose your language first / কথোপকথন শুরু করতে প্রথমে ভাষা নির্বাচন করুন:",
                                         buttons: [
                                             { type: "postback", title: "English 🇬🇧", payload: "LANG_EN" },
                                             { type: "postback", title: "বাংলা 🇧🇩", payload: "LANG_BN" },
@@ -265,10 +342,14 @@ app.post('/webhook', (req, res) => {
                         });
                     } catch (err) { console.error("Gatekeeper intercept tracking error"); }
                 } 
-                else {
-                    // Force display of the menu options if they attempt to write loose text
-                    // If you want them to text freely later, swap this block with standard getSmartReply call.
+                // Gatekeeper B: Has language, but hasn't clicked an option yet
+                else if (!isUnlocked) {
                     await sendVerticalMenu(psid, lang);
+                } 
+                // Passed Gatekeeper: Let them talk seamlessly via Sheet FAQ or Gemini
+                else {
+                    const reply = await getSmartReply(event.message.text, psid, lang);
+                    await sendToMessenger(psid, reply);
                 }
             }
         });
@@ -276,4 +357,4 @@ app.post('/webhook', (req, res) => {
 });
 
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => console.log(`🚀 Bangali Bot with Strict Navigation Gatekeeping is Live!`));
+app.listen(PORT, () => console.log(`🚀 Bangali Bot with Smart Unlocking Mode is Live!`));

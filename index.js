@@ -11,7 +11,7 @@ app.use(bodyParser.json());
 const PAGE_ACCESS_TOKEN = process.env.PAGE_ACCESS_TOKEN;
 const SPREADSHEET_ID = '16kuhcidjptgfxqaB1y0ujeEb59zrewVkUw7o6bVWynw';
 
-// Gemini Initialization
+// Gemini 2.5 Flash Initialization
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const aiModel = genAI.getGenerativeModel({ 
     model: "gemini-2.5-flash", 
@@ -49,9 +49,9 @@ async function getUserLanguage(psid) {
         const rows = response.data.values;
         if (rows) {
             const userRow = rows.reverse().find(row => row[0] === psid);
-            return userRow ? userRow[1] : 'EN';
+            return userRow ? userRow[1] : null; // Returns null if no language choice is registered yet
         }
-    } catch (e) { return 'EN'; }
+    } catch (e) { return null; }
 }
 
 // --- LOG LANGUAGE SELECTION ---
@@ -67,13 +67,80 @@ async function logLanguage(psid, lang) {
     } catch (e) { console.error("Error logging language", e); }
 }
 
-// --- CORE: AI / FAQ LOGIC ---
-async function getSmartReply(userMessage, psid) {
+// --- GLOBAL REUSABLE VERTICAL MENU FUNCTION ---
+async function sendVerticalMenu(psid, selectedLang) {
+    const lang = selectedLang || 'EN';
+    
+    const localizedPrompts = {
+        'EN': { card1: "Main Options", card2: "More Activities", welcome: "Please select an option from our official menus below to continue:" },
+        'BN': { card1: "প্রধান বিকল্পসমূহ", card2: "অন্যান্য কার্যক্রম", welcome: "সামনে অগ্রসর হতে অনুগ্রহ করে নিচের অফিসিয়াল লিঙ্কসমূহ থেকে যেকোনো একটি বিকল্প বেছে নিন:" },
+        'TR': { card1: "Ana Seçenekler", card2: "Diğer Faaliyetler", welcome: "Devam etmek için lütfen aşağıdaki resmi seçeneklerimizden birini seçin:" },
+        'AR': { card1: "الخيارات الرئيسية", card2: "المزيد من الأنشطة", welcome: "يرجى اختيار أحد الخيارات من قوائمنا الرسمية أدناه للمتابعة:" }
+    };
+
+    const translations = {
+        'EN': { donate: "Donate 💰", volunteer: "Be a Volunteer 🤝", aid: "Need Help/Aid? 🙋‍♂️", partner: "Be a Partner 🏢", projects: "Our Projects 📂" },
+        'BN': { donate: "দান করুন 💰", volunteer: "স্বেচ্ছাসেবক হোন 🤝", aid: "সাহায্য প্রয়োজন? 🙋‍♂️", partner: "পার্টনার হোন 🏢", projects: "আমাদের প্রকল্পসমূহ 📂" },
+        'TR': { donate: "Bağış Yap 💰", volunteer: "Gönüllü Ol 🤝", aid: "Yardım Lazım Mı? 🙋‍♂️", partner: "Ortak Ol 🏢", projects: "Projelerimiz 📂" },
+        'AR': { donate: "تبرع الآن 💰", volunteer: "كن متطوعاً 🤝", aid: "هل تحتاج مساعدة؟ 🙋‍♂️", partner: "كن شريكاً 🏢", projects: "مشاريعنا 📂" }
+    };
+
+    const currentLang = localizedPrompts[lang];
+    const labels = translations[lang];
+
+    try {
+        // Text Alert
+        await axios.post(`https://graph.facebook.com/v20.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
+            recipient: { id: psid },
+            message: { text: currentLang.welcome }
+        });
+
+        // Card 1
+        await axios.post(`https://graph.facebook.com/v20.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
+            recipient: { id: psid },
+            message: {
+                attachment: {
+                    type: "template",
+                    payload: {
+                        template_type: "button",
+                        text: currentLang.card1,
+                        buttons: [
+                            { type: "web_url", url: "https://bangalifoundation.org/support-us/", title: labels.donate },
+                            { type: "web_url", url: "https://bangalifoundation.org/become-a-volunteer/", title: labels.volunteer },
+                            { type: "web_url", url: "https://bangalifoundation.org/become-a-beneficiary/", title: labels.aid }
+                        ]
+                    }
+                }
+            }
+        });
+
+        // Card 2
+        await axios.post(`https://graph.facebook.com/v20.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
+            recipient: { id: psid },
+            message: {
+                attachment: {
+                    type: "template",
+                    payload: {
+                        template_type: "button",
+                        text: currentLang.card2,
+                        buttons: [
+                            { type: "web_url", url: "https://bangalifoundation.org/become-a-partner/", title: labels.partner },
+                            { type: "web_url", url: "https://bangalifoundation.org/our-initiatives/", title: labels.projects }
+                        ]
+                    }
+                }
+            }
+        });
+    } catch (err) { console.error("Error sending vertical menu layout stacks"); }
+}
+
+// --- CORE: SMART REPLY LOGIC ---
+async function getSmartReply(userMessage, psid, lang) {
     try {
         await client.authorize();
         const gsapi = google.sheets({ version: 'v4', auth: client });
-        const lang = await getUserLanguage(psid);
 
+        // 1. Check FAQ
         const faqRes = await gsapi.spreadsheets.values.get({
             spreadsheetId: SPREADSHEET_ID,
             range: 'FAQ!A2:B500',
@@ -84,26 +151,24 @@ async function getSmartReply(userMessage, psid) {
             if (match) return match[1];
         }
 
+        // 2. AI Call with Gemini 2.5 Flash
         const result = await aiModel.generateContent(`User Language: ${lang}. Message: ${userMessage}`);
         const response = await result.response;
         return response.text();
 
     } catch (error) {
-        console.error('--- ERROR LOG ---', error.message);
+        console.error('--- ERROR LOG ---');
         return "I'm having a technical moment. Please try again or email us!";
     }
 }
 
 // --- MESSENGER SENDING ---
-async function sendToMessenger(psid, text, quickReplies = null) {
-    const payload = {
-        recipient: { id: psid },
-        message: { text: text }
-    };
-    if (quickReplies) payload.message.quick_replies = quickReplies;
-
+async function sendToMessenger(psid, text) {
     try {
-        await axios.post(`https://graph.facebook.com/v20.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, payload);
+        await axios.post(`https://graph.facebook.com/v20.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
+            recipient: { id: psid },
+            message: { text: text }
+        });
     } catch (e) { console.error("Messenger Post Error"); }
 }
 
@@ -123,96 +188,87 @@ app.post('/webhook', (req, res) => {
             const event = entry.messaging[0];
             const psid = event.sender.id;
 
-            // HANDLE LANGUAGE SELECTION (POSTBACK)
+            // --- 1. HANDLE POSTBACK EVENTS (Language Selection / Get Started) ---
             if (event.postback) {
                 const payload = event.postback.payload;
-                const langMap = { 'LANG_EN': 'EN', 'LANG_BN': 'BN', 'LANG_TR': 'TR', 'LANG_AR': 'AR' };
-                const selected = langMap[payload] || 'EN';
-                await logLanguage(psid, selected);
-                
-                const menuTitles = {
-                    'EN': "Welcome to Bangali Foundation! How can we help? Choose an option:",
-                    'BN': "বাঙালি ফাউন্ডেশনে স্বাগতম! আমরা কীভাবে সাহায্য করতে পারি? একটি বিকল্প বেছে নিন:",
-                    'TR': "Bangali Vakfı'na hoş geldiniz! Nasıl yardımcı olabiliriz? Bir seçenek belirleyin:",
-                    'AR': "مرحباً بكم في مؤسسة بنغالي! كيف يمكننا مساعدتكم؟ اختر أحد الخيارات:"
-                };
 
-                const quickReplies = {
-                    'EN': [
-                        { content_type: "text", title: "Donate 💰", payload: "OPT_DONATE" },
-                        { content_type: "text", title: "Volunteer 🤝", payload: "OPT_VOLUNTEER" },
-                        { content_type: "text", title: "Need Aid? 🙋‍♂️", payload: "OPT_AID" },
-                        { content_type: "text", title: "Partner 🏢", payload: "OPT_PARTNER" },
-                        { content_type: "text", title: "Projects 📂", payload: "OPT_PROJECTS" }
-                    ],
-                    'BN': [
-                        { content_type: "text", title: "দান করুন 💰", payload: "OPT_DONATE" },
-                        { content_type: "text", title: "স্বেচ্ছাসেবক 🤝", payload: "OPT_VOLUNTEER" },
-                        { content_type: "text", title: "সাহায্য চাই? 🙋‍♂️", payload: "OPT_AID" },
-                        { content_type: "text", title: "পার্টনার 🏢", payload: "OPT_PARTNER" },
-                        { content_type: "text", title: "প্রকল্প 📂", payload: "OPT_PROJECTS" }
-                    ],
-                    'TR': [
-                        { content_type: "text", title: "Bağış Yap 💰", payload: "OPT_DONATE" },
-                        { content_type: "text", title: "Gönüllü Ol 🤝", payload: "OPT_VOLUNTEER" },
-                        { content_type: "text", title: "Yardım? 🙋‍♂️", payload: "OPT_AID" },
-                        { content_type: "text", title: "Ortak Ol 🏢", payload: "OPT_PARTNER" },
-                        { content_type: "text", title: "Projeler 📂", payload: "OPT_PROJECTS" }
-                    ],
-                    'AR': [
-                        { content_type: "text", title: "تبرع الآن 💰", payload: "OPT_DONATE" },
-                        { content_type: "text", title: "متطوع 🤝", payload: "OPT_VOLUNTEER" },
-                        { content_type: "text", title: "بحاجة لمساعدة؟ 🙋‍♂️", payload: "OPT_AID" },
-                        { content_type: "text", title: "شريك 🏢", payload: "OPT_PARTNER" },
-                        { content_type: "text", title: "مشاريعنا 📂", payload: "OPT_PROJECTS" }
-                    ]
-                };
-
-                await sendToMessenger(psid, menuTitles[selected], quickReplies[selected]);
+                if (payload === 'GET_STARTED_PAYLOAD') {
+                    try {
+                        await axios.post(`https://graph.facebook.com/v20.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
+                            recipient: { id: psid },
+                            message: {
+                                attachment: {
+                                    type: "template",
+                                    payload: {
+                                        template_type: "button",
+                                        text: "Please select your preferred language / অনুগ্রহ করে আপনার পছন্দের ভাষা নির্বাচন করুন:",
+                                        buttons: [
+                                            { type: "postback", title: "English 🇬🇧", payload: "LANG_EN" },
+                                            { type: "postback", title: "বাংলা 🇧🇩", payload: "LANG_BN" },
+                                            { type: "postback", title: "Türkçe 🇹🇷", payload: "LANG_TR" }
+                                        ]
+                                    }
+                                }
+                            }
+                        });
+                        await axios.post(`https://graph.facebook.com/v20.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
+                            recipient: { id: psid },
+                            message: {
+                                attachment: {
+                                    type: "template",
+                                    payload: {
+                                        template_type: "button",
+                                        text: "More Options:",
+                                        buttons: [
+                                            { type: "postback", title: "العربية 🇸🇦", payload: "LANG_AR" }
+                                        ]
+                                    }
+                                }
+                            }
+                        });
+                    } catch (e) { console.error("Error displaying main language options layout block"); }
+                } 
+                else {
+                    const langMap = { 'LANG_EN': 'EN', 'LANG_BN': 'BN', 'LANG_TR': 'TR', 'LANG_AR': 'AR' };
+                    const selected = langMap[payload] || 'EN';
+                    await logLanguage(psid, selected);
+                    
+                    // Show them the vertical stack option sheets instantly 
+                    await sendVerticalMenu(psid, selected);
+                }
             } 
             
-            // HANDLE MESSAGES & BUTTON CLICKS
+            // --- 2. HANDLE TEXT INPUT MESSAGES (Gatekeeping Added) ---
             else if (event.message && event.message.text) {
-                if (event.message.quick_reply) {
-                    const payload = event.message.quick_reply.payload;
-                    const lang = await getUserLanguage(psid);
-                    
-                    const responses = {
-                        'OPT_DONATE': {
-                            'EN': "Thank you! Support us directly here: https://bangalifoundation.org/support-us/",
-                            'BN': "ধন্যবাদ! সরাসরি আমাদের সাপোর্ট করুন এখানে: https://bangalifoundation.org/support-us/",
-                            'TR': "Teşekkürler! Bize buradan doğrudan destek olabilirsiniz: https://bangalifoundation.org/support-us/",
-                            'AR': "شكراً لك! ادعمنا مباشرة من هنا: https://bangalifoundation.org/support-us/"
-                        },
-                        'OPT_VOLUNTEER': {
-                            'EN': "Click the link https://bangalifoundation.org/become-a-volunteer/ to fill up the form to be our volunteer.",
-                            'BN': "আমাদের স্বেচ্ছাসেবক হতে এই লিঙ্কের ফর্মটি পূরণ করুন: https://bangalifoundation.org/become-a-volunteer/",
-                            'TR': "Gönüllü olmak için şu bağlantıdaki formu doldurun: https://bangalifoundation.org/become-a-volunteer/",
-                            'AR': "انقر على الرابط لتعبئة النموذج لتصبح متطوعاً: https://bangalifoundation.org/become-a-volunteer/"
-                        },
-                        'OPT_AID': {
-                            'EN': "Click the link https://bangalifoundation.org/become-a-beneficiary/ to become a beneficiary.",
-                            'BN': "সাহায্য পেতে এই লিঙ্কে ক্লিক করে আবেদন করুন: https://bangalifoundation.org/become-a-beneficiary/",
-                            'TR': "Yardım almak için şu bağlantıya tıklayarak başvurun: https://bangalifoundation.org/become-a-beneficiary/",
-                            'AR': "انقر على الرابط لتصبح مستفيداً من المساعدات: https://bangalifoundation.org/become-a-beneficiary/"
-                        },
-                        'OPT_PARTNER': {
-                            'EN': "Fill in the form in the following link to become a partner: https://bangalifoundation.org/become-a-partner/",
-                            'BN': "পার্টনার হতে নিচের লিঙ্কের ফর্মটি পূরণ করুন: https://bangalifoundation.org/become-a-partner/",
-                            'TR': "Ortak olmak için şu bağlantıdaki formu doldurun: https://bangalifoundation.org/become-a-partner/",
-                            'AR': "يرجى تعبئة النموذج لتصبح شريكاً لنا: https://bangalifoundation.org/become-a-partner/"
-                        },
-                        'OPT_PROJECTS': {
-                            'EN': "Learn about our initiatives here: https://bangalifoundation.org/our-initiatives/",
-                            'BN': "আমাদের উদ্যোগগুলো সম্পর্কে জানুন এখানে: https://bangalifoundation.org/our-initiatives/",
-                            'TR': "Girişimlerimiz hakkında buradan bilgi alabilirsiniz: https://bangalifoundation.org/our-initiatives/",
-                            'AR': "تعرف على مبادراتنا من هنا: https://bangalifoundation.org/our-initiatives/"
-                        }
-                    };
-                    await sendToMessenger(psid, responses[payload][lang] || responses[payload]['EN']);
-                } else {
-                    const reply = await getSmartReply(event.message.text, psid);
-                    await sendToMessenger(psid, reply);
+                const lang = await getUserLanguage(psid);
+
+                // GATEKEEPER: If user hasn't completed language choice or tries to chat without clicking buttons
+                if (!lang) {
+                    // Send them back to the start workflow
+                    try {
+                        await axios.post(`https://graph.facebook.com/v20.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
+                            recipient: { id: psid },
+                            message: {
+                                attachment: {
+                                    type: "template",
+                                    payload: {
+                                        template_type: "button",
+                                        text: "Please choose your language first to unlock options / কথোপকথন শুরু করতে প্রথমে ভাষা নির্বাচন করুন:",
+                                        buttons: [
+                                            { type: "postback", title: "English 🇬🇧", payload: "LANG_EN" },
+                                            { type: "postback", title: "বাংলা 🇧🇩", payload: "LANG_BN" },
+                                            { type: "postback", title: "Türkçe 🇹🇷", payload: "LANG_TR" }
+                                        ]
+                                    }
+                                }
+                            }
+                        });
+                    } catch (err) { console.error("Gatekeeper intercept tracking error"); }
+                } 
+                else {
+                    // Force display of the menu options if they attempt to write loose text
+                    // If you want them to text freely later, swap this block with standard getSmartReply call.
+                    await sendVerticalMenu(psid, lang);
                 }
             }
         });
@@ -220,4 +276,4 @@ app.post('/webhook', (req, res) => {
 });
 
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => console.log(`🚀 Bangali Bot Live with Interactive Menu!`));
+app.listen(PORT, () => console.log(`🚀 Bangali Bot with Strict Navigation Gatekeeping is Live!`));

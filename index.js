@@ -17,13 +17,33 @@ let googleAuthToken;
 
 const localLangCache = new Map();
 
+
+
+
+
+
+
 async function initializeGoogleAuth() {
   try {
-    if (!process.env.GOOGLE_CREDS) {
-      console.error('❌ GOOGLE_CREDS environment variable is missing!');
+    let credsEnv = process.env.GOOGLE_CREDS;
+    
+    if (!credsEnv) {
+      console.error('❌ GOOGLE_CREDS environment variable is completely missing on Render!');
       return;
     }
-    const credentials = JSON.parse(process.env.GOOGLE_CREDS);
+
+    // Clean up any weird string corruptions or trailing quotes from Render
+    credsEnv = credsEnv.trim();
+    if (credsEnv.startsWith("'") && credsEnv.endsWith("'")) credsEnv = credsEnv.slice(1, -1);
+    if (credsEnv.startsWith('"') && credsEnv.endsWith('"')) credsEnv = credsEnv.slice(1, -1);
+
+    const credentials = JSON.parse(credsEnv);
+    
+    if (!credentials.private_key) {
+      console.error('❌ JSON parsed successfully, but "private_key" property is missing inside it!');
+      return;
+    }
+
     const formattedPrivateKey = credentials.private_key.replace(/\\n/g, '\n');
 
     const auth = new google.auth.JWT(
@@ -39,8 +59,15 @@ async function initializeGoogleAuth() {
     console.log('✅ Google Sheets Identity & Access Token established successfully!');
   } catch (err) {
     console.error('❌ Failed to initialize Google Sheets Auth:', err.message);
+    console.error('🔍 Debug Info - Raw value starting characters:', process.env.GOOGLE_CREDS ? process.env.GOOGLE_CREDS.substring(0, 40) : 'undefined');
   }
 }
+
+
+
+
+
+
 initializeGoogleAuth();
 
 app.use((req, res, next) => {

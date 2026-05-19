@@ -370,6 +370,7 @@ app.post('/webhook', async (req, res) => {
       }
 
       // --- STAGE 4: FAQ Sheet Lookup + Gemini Conversation Fallback ---
+      // --- STAGE 4: FAQ Sheet Lookup + Gemini Conversation Fallback ---
       if (text) {
         const userLang = await getUserLanguage(sender_psid);
         
@@ -386,17 +387,18 @@ app.post('/webhook', async (req, res) => {
               recipient: { id: sender_psid },
               message: { text: matchedFAQAnswer }
             });
-            console.log(`✅ Message answered directly from FAQ tab for user preference: ${targetLanguageName}`);
+            console.log(`✅ FAQ match found for: ${targetLanguageName}`);
           } catch (error) { console.error('❌ Error sending FAQ answer:', error.message); }
           continue; 
         }
 
-        let systemInstructionText = `You are the automated workspace assistant for Bangali Foundation (website: https://bangalifoundation.org/). Answer this user prompt accurately and professionally. CRITICAL: The user's preferred language is ${targetLanguageName}. You MUST write your entire response completely in ${targetLanguageName}. Do not include any other languages.`;
+        let systemInstructionText = `You are the automated assistant for Bangali Foundation. Answer accurately in ${targetLanguageName}. Do not include any other languages.`;
         let aiResponseText = "";
 
         try {
+          // Use the stable, reliable model
           const result = await ai.models.generateContent({
-            model: 'gemini-2.5-flash',
+            model: 'gemini-1.5-flash',
             contents: text,
             config: {
               systemInstruction: systemInstructionText,
@@ -404,26 +406,13 @@ app.post('/webhook', async (req, res) => {
             }
           });
           aiResponseText = result.text;
-        } catch (primaryError) {
-          console.warn('⚠️ Gemini 2.5 busy, pulling backup 8B engine...', primaryError.message);
-          try {
-            const backupResult = await ai.models.generateContent({
-              model: 'gemini-1.5-flash-8b',
-              contents: text,
-              config: {
-                systemInstruction: systemInstructionText,
-                temperature: 0.3
-              }
-            });
-            aiResponseText = backupResult.text;
-          } catch (backupError) {
-            console.error('❌ All Gemini engines overloaded:', backupError.message);
-            
-            if (userLang === 'TR') aiResponseText = "Uzun süreli yoğunluk nedeniyle sunucu yanıt vermedi. Lütfen birkaç dakika sonra tekrar deneyin.";
-            else if (userLang === 'AR') aiResponseText = "عذراً، الخادم يواجه ضغطاً كبيراً حالياً. يرجى المحاولة مرة أخرى بعد قليل.";
-            else if (userLang === 'BN') aiResponseText = "দুঃখিত, এই মুহূর্তে আমাদের সার্ভারে অতিরিক্ত চাপ রয়েছে। অনুগ্রহ করে কিছুক্ষণের মধ্যে আবার চেষ্টা করুন।";
-            else aiResponseText = "Sorry, our servers are currently experiencing high demand. Please try again in a few moments.";
-          }
+        } catch (error) {
+          console.error('❌ Gemini API Error:', error.message);
+          // Friendly fallback message instead of crashing
+          if (userLang === 'TR') aiResponseText = "Şu anda yoğunluk yaşıyoruz, lütfen bir dakika içinde tekrar deneyin.";
+          else if (userLang === 'AR') aiResponseText = "نواجه ضغطاً حالياً، يرجى المحاولة بعد دقيقة.";
+          else if (userLang === 'BN') aiResponseText = "দুঃখিত, এই মুহূর্তে সার্ভারে অতিরিক্ত চাপ রয়েছে, অনুগ্রহ করে এক মিনিট পরে আবার চেষ্টা করুন।";
+          else aiResponseText = "Our servers are busy, please try again in a minute.";
         }
 
         if (aiResponseText) {
@@ -432,8 +421,7 @@ app.post('/webhook', async (req, res) => {
               recipient: { id: sender_psid },
               message: { text: aiResponseText }
             });
-            console.log(`✅ Message processed successfully via Gemini: ${targetLanguageName}`);
-          } catch (error) { console.error('❌ Error dispatching outbound payload:', error.message); }
+          } catch (error) { console.error('❌ Error sending AI response:', error.message); }
         }
       }
     } 

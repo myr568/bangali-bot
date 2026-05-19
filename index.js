@@ -39,54 +39,67 @@ app.get('/webhook', (req, res) => {
   res.status(200).send('Server is Up');
 });
 
-// POST: Handle Incoming Messages
+
+
+
+
+
+
 app.post('/webhook', (req, res) => {
   const body = req.body;
 
   if (body.object === 'page') {
-    // 1. IMMEDIATELY tell Meta we received the data to prevent the retry loop
+    // 1. Instantly tell Meta we received the event so it never loops
     res.status(200).send('EVENT_RECEIVED');
 
-    // 2. Process the events in the background asynchronously
+    // 2. Process events in the background
     body.entry.forEach(async (entry) => {
-      // Security Check: Ensure messaging array exists
       if (!entry.messaging || entry.messaging.length === 0) return;
 
       const webhook_event = entry.messaging[0];
-      
-      // Skip delivery, read receipts, or echo messages from the bot itself
       if (webhook_event.delivery || webhook_event.read || webhook_event.message?.is_echo) return;
 
       const sender_psid = webhook_event.sender?.id;
-      const messageId = webhook_event.message?.mid;
+      const messageId = webhook_event.message?.mid || webhook_event.postback?.mid;
 
       // Deduplication check
-      if (isDuplicateMessage(messageId)) {
-        console.log(`⏭️ Retried duplicate message intercepted and ignored: ${messageId}`);
-        return;
+      if (isDuplicateMessage(messageId)) return;
+
+      let incoming_payload = "";
+
+      // Check if it's a typed text message
+      if (webhook_event.message && webhook_event.message.text) {
+        incoming_payload = webhook_event.message.text.toLowerCase().trim();
+      } 
+      // Check if it's a Quick Reply button click
+      else if (webhook_event.message && webhook_event.message.quick_reply) {
+        incoming_payload = webhook_event.message.quick_reply.payload.toLowerCase().trim();
+      } 
+      // Check if it's a persistent menu or Postback button click
+      else if (webhook_event.postback) {
+        incoming_payload = webhook_event.postback.payload.toLowerCase().trim();
       }
 
-      // Handle message text processing safely
-      if (webhook_event.message && webhook_event.message.text) {
-        const message_text = webhook_event.message.text.toLowerCase().trim();
-        let response_text = `Bangali Foundation received: ${webhook_event.message.text}`;
+      // If we captured an action or text, process the language routing
+      if (incoming_payload) {
+        let response_text = `Bangali Foundation received your request.`;
 
-        // Simple Language Logic
-        if (message_text.includes("merhaba") || message_text.includes("selam")) {
+        // Language Logic (Matches both typed words and button payloads!)
+        if (incoming_payload.includes("merhaba") || incoming_payload.includes("selam") || incoming_payload.includes("turkish")) {
           response_text = "Bangali Foundation'a hoş geldiniz! Size nasıl yardımcı olabilirim?";
-        } else if (message_text.includes("مرحبا") || message_text.includes("سلام")) {
+        } else if (incoming_payload.includes("مرحبا") || incoming_payload.includes("سلام") || incoming_payload.includes("arabic")) {
           response_text = "مرحباً بكم في مؤسسة بنغالي! كيف يمكننا مساعدتكم؟";
-        } else if (message_text.includes("hello") || message_text.includes("hi")) {
+        } else if (incoming_payload.includes("hello") || incoming_payload.includes("hi") || incoming_payload.includes("english")) {
           response_text = "Welcome to Bangali Foundation! How can we help you today?";
         }
 
-        // Send response via background Axios post
+        // Send the response back to the user
         try {
           await axios.post(`https://graph.facebook.com/v17.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
             recipient: { id: sender_psid },
             message: { text: response_text }
           });
-          console.log(`✅ Reply sent successfully to user ${sender_psid}`);
+          console.log(`✅ Reply sent successfully for payload: "${incoming_payload}" to user ${sender_psid}`);
         } catch (error) {
           const errMsg = error.response ? JSON.stringify(error.response.data) : error.message;
           console.error('❌ Error sending reply:', errMsg);
@@ -98,6 +111,13 @@ app.post('/webhook', (req, res) => {
     res.sendStatus(404);
   }
 });
+
+
+
+
+
+
+
 
 app.listen(PORT, () => {
     console.log('------------------------------------');

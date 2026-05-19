@@ -426,39 +426,43 @@ if (text) {
         4. Answer accurately in ${targetLanguageName}. Do not include any other languages.
     `;
 
-    // 3. Gemini Generation
+    // 3. Gemini Generation with Retry Logic
     let aiResponseText = "";
     try {
+        // First attempt
         const result = await ai.models.generateContent({
             model: 'models/gemini-2.5-flash',
             contents: text,
-            config: {
-                systemInstruction: systemInstructionText,
-                temperature: 0.3
-            }
+            config: { systemInstruction: systemInstructionText, temperature: 0.3 }
         });
-
-        aiResponseText = result.text || "I'm sorry, I couldn't generate a response.";
-        
-        await axios.post(`https://graph.facebook.com/v17.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
-            recipient: { id: sender_psid },
-            message: { text: aiResponseText }
-        });
-
-        // 4. Log AI conversation to Sheet1
-        await logChatToSheet(sender_psid, text, aiResponseText);
-
+        aiResponseText = result.text;
     } catch (error) {
-        console.error('❌ Gemini API Error:', error.message);
-        aiResponseText = userLang === 'TR' ? "Şu anda yoğunluk yaşıyoruz, lütfen bir dakika içinde tekrar deneyin." : 
-                         userLang === 'AR' ? "نواجه ضغطاً حالياً، يرجى المحاولة بعد دقيقة." : 
-                         userLang === 'BN' ? "দুঃখিত, এই মুহূর্তে সার্ভারে অতিরিক্ত চাপ রয়েছে, অনুগ্রহ করে এক মিনিট পরে আবার চেষ্টা করুন।" : 
-                         "Our servers are busy, please try again in a minute.";
+        // If it fails, wait 1.5 seconds and try ONE more time before failing
+        console.warn('⚠️ Gemini busy, retrying in 1.5s...');
+        await new Promise(resolve => setTimeout(resolve, 1500));
         
+        try {
+            const retryResult = await ai.models.generateContent({
+                model: 'models/gemini-2.5-flash',
+                contents: text,
+                config: { systemInstruction: systemInstructionText, temperature: 0.3 }
+            });
+            aiResponseText = retryResult.text;
+        } catch (retryError) {
+            console.error('❌ Gemini API Error after retry:', retryError.message);
+            aiResponseText = userLang === 'TR' ? "Şu anda yoğunluk yaşıyoruz, lütfen bir dakika içinde tekrar deneyin." : 
+                             userLang === 'AR' ? "نواجه ضغطاً حالياً، يرجى المحاولة بعد دقيقة." : 
+                             userLang === 'BN' ? "দুঃখিত, এই মুহূর্তে সার্ভারে অতিরিক্ত চাপ রয়েছে, অনুগ্রহ করে এক মিনিট পরে আবার চেষ্টা করুন।" : 
+                             "Our servers are busy, please try again in a minute.";
+        }
+    }
+
+    if (aiResponseText) {
         await axios.post(`https://graph.facebook.com/v17.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
             recipient: { id: sender_psid },
             message: { text: aiResponseText }
         });
+        await logChatToSheet(sender_psid, text, aiResponseText);
     }
 }
 

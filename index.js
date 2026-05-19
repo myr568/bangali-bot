@@ -292,22 +292,28 @@ app.post('/webhook', async (req, res) => {
       if (text || payload) logBotUsage();
 
       // GATEKEEPER: Force Language Selection
-      const currentLang = await getUserLanguage(sender_psid);
-      if (!currentLang && !payload.startsWith("LANG_")) {
-        await axios.post(`https://graph.facebook.com/v17.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
-          recipient: { id: sender_psid },
-          message: {
-            text: "Welcome to Bangali Foundation! Please choose your preferred language:\n\nবাঙালি ফাউন্ডেশনে আপনাকে স্বাগতম! অনুগ্রহ করে ভাষা নির্বাচন করুন:",
-            quick_replies: [
-              { content_type: "text", title: "English 🇬🇧", payload: "LANG_EN" },
-              { content_type: "text", title: "বাংলা 🇧🇩", payload: "LANG_BN" },
-              { content_type: "text", title: "Türkçe 🇹🇷", payload: "LANG_TR" },
-              { content_type: "text", title: "العربية 🇸🇦", payload: "LANG_AR" }
-            ]
-          }
-        });
-        continue;
+const currentLang = await getUserLanguage(sender_psid);
+console.log(`DEBUG: User ${sender_psid} current language is: ${currentLang}`); // Add this to see what's happening
+
+// If currentLang is null, undefined, or empty, FORCE the menu
+if (!currentLang || currentLang === "undefined" || currentLang === "") {
+  // Only show menu if we haven't already processed a language selection in this specific message
+  if (!payload.startsWith("LANG_")) {
+    await axios.post(`https://graph.facebook.com/v17.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
+      recipient: { id: sender_psid },
+      message: {
+        text: "Welcome! Please choose your preferred language:\n\nস্বাগতম! ভাষা নির্বাচন করুন:",
+        quick_replies: [
+          { content_type: "text", title: "English 🇬🇧", payload: "LANG_EN" },
+          { content_type: "text", title: "বাংলা 🇧🇩", payload: "LANG_BN" },
+          { content_type: "text", title: "Türkçe 🇹🇷", payload: "LANG_TR" },
+          { content_type: "text", title: "العربية 🇸🇦", payload: "LANG_AR" }
+        ]
       }
+    });
+    continue;
+  }
+}
 
       // STAGE 1: Process Language Selection
       if (payload.startsWith("LANG_")) {

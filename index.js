@@ -403,8 +403,9 @@ app.post('/webhook', async (req, res) => {
 
         try {
         // Change this line in your Stage 4 block
+// Replace the model line in your Stage 4 block with this:
 const result = await ai.models.generateContent({
-  model: 'gemini-1.5-flash-002', // Use the specific stable version
+  model: 'models/gemini-2.5-flash', // Use the exact name from the logs
   contents: text,
   config: {
     systemInstruction: systemInstructionText,

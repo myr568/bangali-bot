@@ -29,39 +29,34 @@ async function initializeGoogleAuth() {
   try {
     let credentials;
 
-    // --- DEBUGGING BLOCK ---
+    // --- LOAD CREDENTIALS ---
     if (process.env.GOOGLE_CREDS) {
-      const rawEnv = process.env.GOOGLE_CREDS.trim();
-      console.log("DEBUG: GOOGLE_CREDS detected. Length:", rawEnv.length);
-      console.log("DEBUG: First 10 characters:", rawEnv.substring(0, 10));
-      
-      credentials = JSON.parse(rawEnv);
+      console.log("DEBUG: Parsing GOOGLE_CREDS from environment...");
+      credentials = JSON.parse(process.env.GOOGLE_CREDS.trim());
     } else {
-      console.log("DEBUG: GOOGLE_CREDS is missing from process.env!");
+      console.log("DEBUG: Loading from local file...");
       const keyPath = path.join(__dirname, 'YOUR_KEY_FILENAME.json'); 
-      console.log('🔍 Attempting local load from:', keyPath);
-      const rawData = fs.readFileSync(keyPath);
-      credentials = JSON.parse(rawData);
+      credentials = JSON.parse(fs.readFileSync(keyPath));
     }
 
-    // --- AUTHENTICATION LOGIC ---
-    const formattedPrivateKey = credentials.private_key.replace(/\\n/g, '\n');
-    const auth = new google.auth.JWT(
-      credentials.client_email,
-      null,
-      formattedPrivateKey,
-      ['https://www.googleapis.com/auth/spreadsheets']
-    );
+    // --- ROBUST AUTHENTICATION ---
+    // Instead of manual JWT construction, we use 'fromJSON' which is the standard 
+    // way to load a service account key object safely.
+    const auth = google.auth.fromJSON(credentials);
+    
+    // Scopes are required for the Auth object to work with Sheets
+    const scopedAuth = auth.createScoped(['https://www.googleapis.com/auth/spreadsheets']);
 
-    await auth.authorize();
-    googleAuthToken = auth;
+    await scopedAuth.authorize();
+    googleAuthToken = scopedAuth;
     sheetsClient = google.sheets({ version: 'v4', auth: googleAuthToken });
-    console.log('✅ Google Sheets Identity established successfully!');
+    
+    console.log('✅ Google Sheets Identity established successfully using fromJSON!');
   } catch (err) {
     console.error('❌ Authentication failed in initializeGoogleAuth:', err.message);
+    console.error('Full Error Stack:', err.stack); // Added for deeper insight
   }
 }
-
 
 
 

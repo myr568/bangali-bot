@@ -393,38 +393,51 @@ app.post('/webhook', async (req, res) => {
       }
 
       // --- STAGE 4: FAQ Sheet Lookup + Gemini Conversation ---
+// --- STAGE 4: FAQ Sheet Lookup + Enriched Gemini Conversation ---
 if (text) {
     const userLang = await getUserLanguage(sender_psid);
     let targetLanguageName = userLang === 'TR' ? "Turkish" : userLang === 'BN' ? "Bangla" : userLang === 'AR' ? "Arabic" : "English";
 
+    // 1. FAQ Lookup
     const matchedFAQAnswer = await checkFAQSheet(text);
-    
     if (matchedFAQAnswer) {
         try {
             await axios.post(`https://graph.facebook.com/v17.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
                 recipient: { id: sender_psid },
                 message: { text: matchedFAQAnswer }
             });
-            // Fixed: Log the FAQ match correctly
             await logChatToSheet(sender_psid, text, matchedFAQAnswer);
             console.log(`✅ FAQ match found for: ${targetLanguageName}`);
         } catch (error) { console.error('❌ Error sending FAQ answer:', error.message); }
         continue; 
     }
 
-    // AI Generation
+    // 2. AI Persona & Context Setup
+    const missionSummary = "Bangali Foundation is a humanitarian organization focused on establishing safe water wells, educational support, and emergency relief for underserved communities.";
+    const systemInstructionText = `
+        You are the official, helpful, and empathetic automated assistant for Bangali Foundation.
+        Our mission: ${missionSummary}
+        Website: https://bangalifoundation.org/
+        
+        Guidelines:
+        1. Always maintain a professional and compassionate tone.
+        2. If the user asks about our work or mission, refer them to our website: https://bangalifoundation.org/.
+        3. If the user needs help or wants to donate, guide them to our website.
+        4. Answer accurately in ${targetLanguageName}. Do not include any other languages.
+    `;
+
+    // 3. Gemini Generation
     let aiResponseText = "";
     try {
         const result = await ai.models.generateContent({
             model: 'models/gemini-2.5-flash',
             contents: text,
             config: {
-                systemInstruction: `You are the automated assistant for Bangali Foundation. Answer accurately in ${targetLanguageName}. Do not include any other languages.`,
+                systemInstruction: systemInstructionText,
                 temperature: 0.3
             }
         });
 
-        // Ensure result.text exists before accessing it
         aiResponseText = result.text || "I'm sorry, I couldn't generate a response.";
         
         await axios.post(`https://graph.facebook.com/v17.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
@@ -432,7 +445,7 @@ if (text) {
             message: { text: aiResponseText }
         });
 
-        // Fixed: Log only after successful generation
+        // 4. Log AI conversation to Sheet1
         await logChatToSheet(sender_psid, text, aiResponseText);
 
     } catch (error) {
@@ -448,11 +461,17 @@ if (text) {
         });
     }
 }
+
+
     } 
   } else {
     res.sendStatus(404);
   }
 });
+
+
+
+
 
 const PORT = 3000;
 app.listen(PORT, () => {

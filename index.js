@@ -125,7 +125,7 @@ async function getUserLanguage(psid) {
     return localLangCache.get(safePsid);
   }
 
-  if (!sheetsClient) return 'EN'; 
+  if (!sheetsClient) return null; // CHANGE THIS FROM 'EN' TO null
   try {
     const response = await sheetsClient.spreadsheets.values.get({
       spreadsheetId: SPREADSHEET_ID,
@@ -141,8 +141,9 @@ async function getUserLanguage(psid) {
   } catch (err) {
     console.error('❌ Google Sheets READ Engine failed:', err.message);
   }
-  return 'EN'; 
+  return null; // CHANGE THIS FROM 'EN' TO null
 }
+
 
 // Helper: Check FAQ sheet tab for dynamic keywords matching
 async function checkFAQSheet(incomingText) {

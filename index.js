@@ -40,10 +40,20 @@ app.use((req, res, next) => {
 
 const processedMids = new Map();
 
+
+
+
 // Helper: Save or update user language selection in UserPrefs sheet
+
+
+// Helper: Save or update user language selection
 async function saveUserLanguage(psid, languageCode) {
+  const safePsid = String(psid).trim();
+  localLangCache.set(safePsid, languageCode);
+  console.log(`📍 Local memory cache set: ${safePsid} -> ${languageCode}`);
+
   if (!sheetsClient) {
-    console.error('⚠️ Sheets Client is offline. Cannot save language.');
+    console.error('⚠️ Sheets Client is offline. Saved only to local memory.');
     return;
   }
   try {
@@ -56,8 +66,9 @@ async function saveUserLanguage(psid, languageCode) {
     const rows = response.data.values || [];
     let userRowIndex = -1;
 
+    // Loop checks with absolute string conversion to prevent type mismatches
     for (let i = 0; i < rows.length; i++) {
-      if (rows[i] && rows[i][0] === psid) {
+      if (rows[i] && rows[i][0] && String(rows[i][0]).trim() === safePsid) {
         userRowIndex = i + 1;
         break;
       }
@@ -71,21 +82,69 @@ async function saveUserLanguage(psid, languageCode) {
         valueInputOption: 'USER_ENTERED',
         requestBody: { values: [[languageCode]] }
       });
-      console.log(`🔄 Updated sheet preference: ${psid} -> ${languageCode}`);
+      console.log(`🔄 Google Sheet Updated Successfully: ${safePsid} -> ${languageCode}`);
     } else {
-      // Append new row
+      // Append new row explicitly below headers
       await sheetsClient.spreadsheets.values.append({
         spreadsheetId: SPREADSHEET_ID,
         range: rangeName,
         valueInputOption: 'USER_ENTERED',
-        requestBody: { values: [[psid, languageCode]] }
+        requestBody: { values: [[safePsid, languageCode]] }
       });
-      console.log(`💾 Saved brand new preference: ${psid} -> ${languageCode}`);
+      console.log(`💾 Google Sheet Appended (New Entry): ${safePsid} -> ${languageCode}`);
     }
   } catch (err) {
-    console.error('❌ Error writing user language preference to sheet:', err.message);
+    console.error('❌ Google Sheets WRITE Engine failed.');
+    if (err.response) {
+      console.error('Status:', err.response.status);
+      console.error('Detailed Error Data:', JSON.stringify(err.response.data));
+    } else {
+      console.error('Error Message:', err.message);
+    }
   }
 }
+
+// Helper: Read user language preference
+async function getUserLanguage(psid) {
+  const safePsid = String(psid).trim();
+
+  // Instant local memory lookup
+  if (localLangCache.has(safePsid)) {
+    return localLangCache.get(safePsid);
+  }
+
+  if (!sheetsClient) return 'EN'; 
+  try {
+    const response = await sheetsClient.spreadsheets.values.get({
+      spreadsheetId: SPREADSHEET_ID,
+      range: 'UserPrefs!A:B',
+    });
+    const rows = response.data.values || [];
+    for (const row of rows) {
+      if (row && row[0] && String(row[0]).trim() === safePsid) {
+        localLangCache.set(safePsid, row[1]); 
+        return row[1];
+      }
+    }
+  } catch (err) {
+    console.error('❌ Google Sheets READ Engine failed.');
+    if (err.response) {
+      console.error('Detailed Read Error Data:', JSON.stringify(err.response.data));
+    } else {
+      console.error('Error Message:', err.message);
+    }
+  }
+  return 'EN'; // Default back to English if sheet reading fails entirely
+}
+
+
+
+
+
+
+
+
+
 
 // Helper: Read user language preference from UserPrefs sheet
 async function getUserLanguage(psid) {
@@ -104,6 +163,9 @@ async function getUserLanguage(psid) {
   }
   return 'BN'; // Fallback to Bangla
 }
+
+
+
 
 // GET: Webhook Verification
 app.get('/webhook', (req, res) => {
@@ -164,12 +226,15 @@ app.post('/webhook', async (req, res) => {
       }
 
       // --- STAGE 2: Catch Language Click & Commit into Google Sheet UserPrefs ---
+      // --- STAGE 2: Catch Language Click & Commit ---
       if (payload.startsWith("LANG_")) {
         const selectedLang = payload.split("_")[1];
         
+        // CRITICAL: Ensure 'await' is present here so it doesn't move forward until the data is fully stored
         await saveUserLanguage(sender_psid, selectedLang);
-
+        
         let introText = "Please select an option from our structural services down below 👇";
+  // ... rest of stage 2 logic remains completely identical ...
         let options = ["❤️ Donate", "🤝 Be A Volunteer", "🆘 Need Help", "🏗️ Our Projects", "ℹ️ About Us"];
 
         if (selectedLang === 'TR') {

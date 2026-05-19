@@ -14,6 +14,9 @@ const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
 const SPREADSHEET_ID = '16kuhcidjptgfxqaB1y0ujeEb59zrewVkUw7o6bVWynw';
 let sheetsClient;
 
+// FIXED: Global memory cache initialization to keep track of sessions instantly
+const localLangCache = new Map();
+
 try {
   const credentials = JSON.parse(process.env.GOOGLE_CREDS);
   const formattedPrivateKey = credentials.private_key.replace(/\\n/g, '\n');
@@ -39,12 +42,6 @@ app.use((req, res, next) => {
 });
 
 const processedMids = new Map();
-
-
-
-
-// Helper: Save or update user language selection in UserPrefs sheet
-
 
 // Helper: Save or update user language selection
 async function saveUserLanguage(psid, languageCode) {
@@ -134,38 +131,8 @@ async function getUserLanguage(psid) {
       console.error('Error Message:', err.message);
     }
   }
-  return 'EN'; // Default back to English if sheet reading fails entirely
+  return 'EN'; // FIXED: Defaults back to English instead of Bangla if sheet engine fails entirely
 }
-
-
-
-
-
-
-
-
-
-
-// Helper: Read user language preference from UserPrefs sheet
-async function getUserLanguage(psid) {
-  if (!sheetsClient) return 'BN'; 
-  try {
-    const response = await sheetsClient.spreadsheets.values.get({
-      spreadsheetId: SPREADSHEET_ID,
-      range: 'UserPrefs!A:B',
-    });
-    const rows = response.data.values || [];
-    for (const row of rows) {
-      if (row && row[0] === psid) return row[1];
-    }
-  } catch (err) {
-    console.error('❌ Error reading preference from sheet:', err.message);
-  }
-  return 'BN'; // Fallback to Bangla
-}
-
-
-
 
 // GET: Webhook Verification
 app.get('/webhook', (req, res) => {
@@ -225,16 +192,13 @@ app.post('/webhook', async (req, res) => {
         continue;
       }
 
-      // --- STAGE 2: Catch Language Click & Commit into Google Sheet UserPrefs ---
       // --- STAGE 2: Catch Language Click & Commit ---
       if (payload.startsWith("LANG_")) {
         const selectedLang = payload.split("_")[1];
         
-        // CRITICAL: Ensure 'await' is present here so it doesn't move forward until the data is fully stored
         await saveUserLanguage(sender_psid, selectedLang);
         
         let introText = "Please select an option from our structural services down below 👇";
-  // ... rest of stage 2 logic remains completely identical ...
         let options = ["❤️ Donate", "🤝 Be A Volunteer", "🆘 Need Help", "🏗️ Our Projects", "ℹ️ About Us"];
 
         if (selectedLang === 'TR') {
@@ -307,7 +271,13 @@ app.post('/webhook', async (req, res) => {
       // --- STAGE 4: Gemini Conversation with Context Retrieval ---
       if (text) {
         const userLang = await getUserLanguage(sender_psid);
-        let systemContextPrompt = `You are the automated workspace assistant for Bangali Foundation (website: https://bangalifoundation.org/). Answer this user prompt accurately and professionally. The user's stored language preference is: ${userLang}. You MUST answer completely in that language.`;
+        
+        let targetLanguageName = "English";
+        if (userLang === 'TR') targetLanguageName = "Turkish";
+        if (userLang === 'BN') targetLanguageName = "Bangla";
+        if (userLang === 'AR') targetLanguageName = "Arabic";
+
+        let systemContextPrompt = `You are the automated workspace assistant for Bangali Foundation (website: https://bangalifoundation.org/). Answer this user prompt accurately and professionally. CRITICAL: The user's preferred language is ${targetLanguageName}. You MUST write your entire response completely in ${targetLanguageName}. Do not include any other languages.`;
         let aiResponseText = "";
 
         try {
@@ -326,7 +296,11 @@ app.post('/webhook', async (req, res) => {
             aiResponseText = backupResult.text;
           } catch (backupError) {
             console.error('❌ All Gemini engines are currently overloaded:', backupError.message);
-            aiResponseText = "দুঃখিত, এই মুহূর্তে আমাদের সার্ভারে অতিরিক্ত চাপ রয়েছে। অনুগ্রহ করে কিছুক্ষণের মধ্যে আবার চেষ্টা করুন।";
+            
+            if (userLang === 'TR') aiResponseText = "Uzun süreli yoğunluk nedeniyle sunucu yanıt vermedi. Lütfen birkaç dakika sonra tekrar deneyin.";
+            else if (userLang === 'AR') aiResponseText = "عذراً، الخادم يواجه ضغطاً كبيراً حالياً. يرجى المحاولة مرة أخرى بعد قليل.";
+            else if (userLang === 'BN') aiResponseText = "দুঃখিত, এই মুহূর্তে আমাদের সার্ভারে অতিরিক্ত চাপ রয়েছে। অনুগ্রহ করে কিছুক্ষণের মধ্যে আবার চেষ্টা করুন।";
+            else aiResponseText = "Sorry, our servers are currently experiencing high demand. Please try again in a few moments.";
           }
         }
 
@@ -336,7 +310,7 @@ app.post('/webhook', async (req, res) => {
               recipient: { id: sender_psid },
               message: { text: aiResponseText }
             });
-            console.log(`✅ Message processed successfully using language row target: ${userLang}`);
+            console.log(`✅ Message processed successfully using language row target: ${targetLanguageName}`);
           } catch (error) {
             console.error('❌ Error dispatching out bound payload:', error.message);
           }

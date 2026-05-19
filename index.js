@@ -370,9 +370,23 @@ if (!currentLang || currentLang === "undefined" || currentLang === "") {
       }
 
       // STAGE 4: FAQ Sheet Lookup + Gemini Conversation
-      if (text) {
-        const userLang = await getUserLanguage(sender_psid);
-        let targetLanguageName = userLang === 'TR' ? "Turkish" : userLang === 'BN' ? "Bangla" : userLang === 'AR' ? "Arabic" : "English";
+      // STAGE 4: FAQ + Gemini Conversation
+if (text) {
+  // Always fetch the latest preference from the source of truth
+  const userLang = await getUserLanguage(sender_psid); 
+  
+  // Map the language code to the full name for the AI system instruction
+  let targetLanguageName = userLang === 'TR' ? "Turkish" : 
+                           userLang === 'BN' ? "Bangla" : 
+                           userLang === 'AR' ? "Arabic" : "English";
+
+  // Use this targetLanguageName in your system instruction
+  const systemInstructionText = `You are the official assistant for Bangali Foundation. 
+  Answer the user's request accurately in ${targetLanguageName}. 
+  Do not include any other languages.`;
+  
+  // ... rest of your AI call
+}
         
         const matchedFAQAnswer = await checkFAQSheet(text);
         if (matchedFAQAnswer) {

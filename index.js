@@ -395,6 +395,12 @@ app.post('/webhook', async (req, res) => {
         let systemInstructionText = `You are the automated assistant for Bangali Foundation. Answer accurately in ${targetLanguageName}. Do not include any other languages.`;
         let aiResponseText = "";
 
+
+        // Add this line temporarily to your code before the try block
+const models = await ai.models.list();
+console.log("🔍 Available models:", models);
+
+
         try {
           // Use the stable, reliable model
           // Replace the model line in your Stage 4 block with this:

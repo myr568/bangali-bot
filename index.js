@@ -237,6 +237,35 @@ app.get('/webhook', (req, res) => {
   res.status(200).send('Server is Up');
 });
 
+
+
+
+
+
+
+//google sheet
+async function logChatToSheet(psid, userText, botResponse) {
+  if (!sheetsClient) return;
+  try {
+    const timestamp = new Date().toLocaleString();
+    await sheetsClient.spreadsheets.values.append({
+      spreadsheetId: SPREADSHEET_ID,
+      range: 'Sheet1!A:D', // Adjust if your columns are different
+      valueInputOption: 'USER_ENTERED',
+      requestBody: { values: [[timestamp, psid, userText, botResponse]] }
+    });
+    console.log(`📝 Chat logged to Sheet1: ${psid}`);
+  } catch (err) {
+    console.error('❌ Failed to log chat to Sheet1:', err.message);
+  }
+}
+
+
+
+
+
+
+
 // POST: Main Webhook Engine
 app.post('/webhook', async (req, res) => {
   const body = req.body;
@@ -364,7 +393,6 @@ app.post('/webhook', async (req, res) => {
       }
 
       // --- STAGE 4: FAQ Sheet Lookup + Gemini Conversation Fallback ---
-      // --- STAGE 4: FAQ Sheet Lookup + Gemini Conversation Fallback ---
       if (text) {
         const userLang = await getUserLanguage(sender_psid);
         
@@ -381,6 +409,9 @@ app.post('/webhook', async (req, res) => {
               recipient: { id: sender_psid },
               message: { text: matchedFAQAnswer }
             });
+
+            logChatToSheet(sender_psid, text, aiResponseText);
+            
             console.log(`✅ FAQ match found for: ${targetLanguageName}`);
           } catch (error) { console.error('❌ Error sending FAQ answer:', error.message); }
           continue; 

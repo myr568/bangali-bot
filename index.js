@@ -16,8 +16,6 @@ let sheetsClient;
 
 try {
   const credentials = JSON.parse(process.env.GOOGLE_CREDS);
-  
-  // FIX: Safely repair broken newline strings common in Render environment variables
   const formattedPrivateKey = credentials.private_key.replace(/\\n/g, '\n');
 
   const auth = new google.auth.JWT(
@@ -26,9 +24,10 @@ try {
     formattedPrivateKey,
     ['https://www.googleapis.com/auth/spreadsheets']
   );
-  
-  sheetsClient = google.sheets({ version: 'v4', auth });
-  console.log('✅ Google Sheets Client connected successfully!');
+
+  // Bind the auth object directly inside the options parameter 
+  sheetsClient = google.sheets({ version: 'v4', auth: auth });
+  console.log('✅ Google Sheets Identity established successfully!');
 } catch (err) {
   console.error('❌ Failed to initialize Google Sheets Auth:', err.message);
 }
@@ -90,7 +89,7 @@ async function saveUserLanguage(psid, languageCode) {
 
 // Helper: Read user language preference from UserPrefs sheet
 async function getUserLanguage(psid) {
-  if (!sheetsClient) return 'BN'; // Default fallback to Bangla if client isn't ready
+  if (!sheetsClient) return 'BN'; 
   try {
     const response = await sheetsClient.spreadsheets.values.get({
       spreadsheetId: SPREADSHEET_ID,
@@ -103,14 +102,8 @@ async function getUserLanguage(psid) {
   } catch (err) {
     console.error('❌ Error reading preference from sheet:', err.message);
   }
-  return 'BN'; // Default fallback to Bangla
+  return 'BN'; // Fallback to Bangla
 }
-
-
-
-
-
-
 
 // GET: Webhook Verification
 app.get('/webhook', (req, res) => {
@@ -174,7 +167,6 @@ app.post('/webhook', async (req, res) => {
       if (payload.startsWith("LANG_")) {
         const selectedLang = payload.split("_")[1];
         
-        // Save choice into the cloud tracking spreadsheet
         await saveUserLanguage(sender_psid, selectedLang);
 
         let introText = "Please select an option from our structural services down below 👇";
@@ -188,7 +180,7 @@ app.post('/webhook', async (req, res) => {
           options = ["❤️ التبرع والدعم", "🤝 كن متطوعاً", "🆘 طلب مساعدة", "🏗️ مشاريعنا", "ℹ️ من نحن"];
         } else if (selectedLang === 'BN') {
           introText = "অনুগ্রহ করে নিচে দেওয়া আমাদের সেবাসমূহ থেকে যেকোনো একটি অপশন বেছে নিন 👇";
-          options = ["❤️ ডোনেট করুন", "🤝 ভলান্টিয়ার হোন", "🆘 সাহায্য প্রয়োজন", "🏗️ আমাদের প্রজেক্ট সমূহ", "ℹ️ আমাদের সম্পর্কে"];
+          options = ["❤️ ডোনেট করুন", "🤝 ভলান্টিয়ার হোন", "🆘 সাহায্য প্রয়োজন", "🏗️ আমাদের প্রজেক্ট সমূহ", "ℹ️ আমাদের সম্পর্কে"];
         }
 
         try {
@@ -207,7 +199,7 @@ app.post('/webhook', async (req, res) => {
         continue;
       }
 
-      // --- STAGE 3: Handle Selected Menu Choices Inside Chat (Showing Plain Links Instead of Redirecting) ---
+      // --- STAGE 3: Handle Selected Menu Choices Inside Chat ---
       if (payload.startsWith("OPT_")) {
         const [_, lang, optionNum] = payload.split("_");
         let response_text = "";
@@ -225,13 +217,12 @@ app.post('/webhook', async (req, res) => {
           if (optionNum === '4') response_text = "🏗️ لمتابعة مشاريعنا الميدانية وحملات حفر الآبار، تفضل بزيارة:\n➡️ https://bangalifoundation.org/";
           if (optionNum === '5') response_text = "ℹ️ لمعرفة المزيد عن رؤية وأهداف مؤسسة بنغالي:\n➡️ https://bangalifoundation.org/about-us/";
         } else if (lang === 'BN') {
-          if (optionNum === '1') response_text = "❤️ আমাদের বিভিন্ন মানবিক কাজে ডোনেট করতে এবং সাহায্য পাঠাতে আমাদের অফিশিয়াল ওয়েবসাইট ভিজিট করুন:\n➡️ https://bangalifoundation.org/";
-          if (optionNum === '2') response_text = "🤝 আমাদের ভলান্টিয়ার টিমে যোগ দিয়ে মানুষের পাশে দাঁড়াতে এখানে আবেদন করুন:\n➡️ https://bangalifoundation.org/become-a-volunteer/";
-          if (optionNum === '3') response_text = "🆘 আপনার যদি কোনো সহযোগিতার প্রয়োজন থাকে, তবে আপনার সমস্যাটি এখানে লিখে জানান। আমাদের টিম এবং এআই আপনাকে গাইড করবে।";
+          if (optionNum === '1') response_text = "❤️ আমাদের বিভিন্ন মানবিক কাজে ডোনেট করতে এবং সাহায্য পাঠাতে আমাদের অফিশিয়াল ওয়েবসাইট ভিজিট করুন:\n➡️ https://bangalifoundation.org/";
+          if (optionNum === '2') response_text = "🤝 আমাদের ভলান্টিয়ার টিমে যোগ দিয়ে মানুষের পাশে দাঁড়াতে এখানে আবেদন করুন:\n➡️ https://bangalifoundation.org/become-a-volunteer/";
+          if (optionNum === '3') response_text = "🆘 আপনার যদি কোনো সহযোগিতার প্রয়োজন থাকে, তবে আপনার সমস্যাটি এখানে লিখে জানান। আমাদের টিম এবং এআই আপনাকে গাইড করবে।";
           if (optionNum === '4') response_text = "🏗️ আমাদের রানিং প্রজেক্ট ও পানির পাম্প স্থাপন কার্যক্রম সমূহ দেখতে ভিজিট করুন:\n➡️ https://bangalifoundation.org/";
           if (optionNum === '5') response_text = "ℹ️ বাঙালি ফাউন্ডেশনের উদ্দেশ্য ও আমাদের কার্যক্রম সম্পর্কে বিস্তারিত জানতে ভিজিট করুন:\n➡️ https://bangalifoundation.org/about-us/";
         } else {
-          // English Default
           if (optionNum === '1') response_text = "❤️ To support our mission and securely donate, please visit our online portal:\n➡️ https://bangalifoundation.org/";
           if (optionNum === '2') response_text = "🤝 To join our team and make an impact as a volunteer, fill out the form here:\n➡️ https://bangalifoundation.org/become-a-volunteer/";
           if (optionNum === '3') response_text = "🆘 If you need assistance, please type your message right here, and our smart engine will guide you.";
@@ -248,29 +239,45 @@ app.post('/webhook', async (req, res) => {
         continue;
       }
 
-      // --- STAGE 4: Gemini Conversation with Context Retrieval from UserPrefs ---
+      // --- STAGE 4: Gemini Conversation with Context Retrieval ---
       if (text) {
-        // Fetch saved user language preference row from Google Sheets
         const userLang = await getUserLanguage(sender_psid);
-
-        let systemContextPrompt = `You are the automated workspace virtual assistant for Bangali Foundation (website: https://bangalifoundation.org/). Answer this user prompt accurately, and professionally. The user's stored language preference on record is: ${userLang}. You MUST answer completely in that language.`;
+        let systemContextPrompt = `You are the automated workspace assistant for Bangali Foundation (website: https://bangalifoundation.org/). Answer this user prompt accurately and professionally. The user's stored language preference is: ${userLang}. You MUST answer completely in that language.`;
+        let aiResponseText = "";
 
         try {
           const result = await ai.models.generateContent({
             model: 'gemini-2.5-flash',
             contents: `${systemContextPrompt}\n\nUser Question: ${text}`,
           });
+          aiResponseText = result.text;
+        } catch (primaryError) {
+          console.warn('⚠️ Gemini 2.5 busy, pulling backup model engine...');
+          try {
+            const backupResult = await ai.models.generateContent({
+              model: 'gemini-1.5-flash',
+              contents: `${systemContextPrompt}\n\nUser Question: ${text}`,
+            });
+            aiResponseText = backupResult.text;
+          } catch (backupError) {
+            console.error('❌ All Gemini engines are currently overloaded:', backupError.message);
+            aiResponseText = "দুঃখিত, এই মুহূর্তে আমাদের সার্ভারে অতিরিক্ত চাপ রয়েছে। অনুগ্রহ করে কিছুক্ষণের মধ্যে আবার চেষ্টা করুন।";
+          }
+        }
 
-          await axios.post(`https://graph.facebook.com/v17.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
-            recipient: { id: sender_psid },
-            message: { text: result.text }
-          });
-          console.log(`✅ Gemini handled text query using language key: ${userLang}`);
-        } catch (error) {
-          console.error('❌ Gemini workflow issue:', error.message);
+        if (aiResponseText) {
+          try {
+            await axios.post(`https://graph.facebook.com/v17.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
+              recipient: { id: sender_psid },
+              message: { text: aiResponseText }
+            });
+            console.log(`✅ Message processed successfully using language row target: ${userLang}`);
+          } catch (error) {
+            console.error('❌ Error dispatching out bound payload:', error.message);
+          }
         }
       }
-    }
+    } // Closes the entry loop safely
   } else {
     res.sendStatus(404);
   }

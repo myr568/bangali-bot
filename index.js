@@ -392,74 +392,62 @@ app.post('/webhook', async (req, res) => {
         continue;
       }
 
-      // --- STAGE 4: FAQ Sheet Lookup + Gemini Conversation Fallback ---
-      if (text) {
-        const userLang = await getUserLanguage(sender_psid);
-        
-        let targetLanguageName = "English";
-        if (userLang === 'TR') targetLanguageName = "Turkish";
-        if (userLang === 'BN') targetLanguageName = "Bangla";
-        if (userLang === 'AR') targetLanguageName = "Arabic";
+      // --- STAGE 4: FAQ Sheet Lookup + Gemini Conversation ---
+if (text) {
+    const userLang = await getUserLanguage(sender_psid);
+    let targetLanguageName = userLang === 'TR' ? "Turkish" : userLang === 'BN' ? "Bangla" : userLang === 'AR' ? "Arabic" : "English";
 
-        const matchedFAQAnswer = await checkFAQSheet(text);
-        
-        if (matchedFAQAnswer) {
-          try {
-            await axios.post(`https://graph.facebook.com/v17.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
-              recipient: { id: sender_psid },
-              message: { text: matchedFAQAnswer }
-            });
-
-            logChatToSheet(sender_psid, text, aiResponseText);
-            
-            console.log(`✅ FAQ match found for: ${targetLanguageName}`);
-          } catch (error) { console.error('❌ Error sending FAQ answer:', error.message); }
-          continue; 
-        }
-
-        let systemInstructionText = `You are the automated assistant for Bangali Foundation. Answer accurately in ${targetLanguageName}. Do not include any other languages.`;
-        let aiResponseText = "";
-
-
-        // Add this line temporarily to your code before the try block
-        const models = await ai.models.list();
-        console.log("🔍 Available models:", models);
-
-
+    const matchedFAQAnswer = await checkFAQSheet(text);
+    
+    if (matchedFAQAnswer) {
         try {
-        // Change this line in your Stage 4 block
-// Replace the model line in your Stage 4 block with this:
-const result = await ai.models.generateContent({
-  model: 'models/gemini-2.5-flash', // Use the exact name from the logs
-  contents: text,
-  config: {
-    systemInstruction: systemInstructionText,
-    temperature: 0.3
-  }
-});
-
-
-
-
-          aiResponseText = result.text;
-        } catch (error) {
-          console.error('❌ Gemini API Error:', error.message);
-          // Friendly fallback message instead of crashing
-          if (userLang === 'TR') aiResponseText = "Şu anda yoğunluk yaşıyoruz, lütfen bir dakika içinde tekrar deneyin.";
-          else if (userLang === 'AR') aiResponseText = "نواجه ضغطاً حالياً، يرجى المحاولة بعد دقيقة.";
-          else if (userLang === 'BN') aiResponseText = "দুঃখিত, এই মুহূর্তে সার্ভারে অতিরিক্ত চাপ রয়েছে, অনুগ্রহ করে এক মিনিট পরে আবার চেষ্টা করুন।";
-          else aiResponseText = "Our servers are busy, please try again in a minute.";
-        }
-
-        if (aiResponseText) {
-          try {
             await axios.post(`https://graph.facebook.com/v17.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
-              recipient: { id: sender_psid },
-              message: { text: aiResponseText }
+                recipient: { id: sender_psid },
+                message: { text: matchedFAQAnswer }
             });
-          } catch (error) { console.error('❌ Error sending AI response:', error.message); }
-        }
-      }
+            // Fixed: Log the FAQ match correctly
+            await logChatToSheet(sender_psid, text, matchedFAQAnswer);
+            console.log(`✅ FAQ match found for: ${targetLanguageName}`);
+        } catch (error) { console.error('❌ Error sending FAQ answer:', error.message); }
+        continue; 
+    }
+
+    // AI Generation
+    let aiResponseText = "";
+    try {
+        const result = await ai.models.generateContent({
+            model: 'models/gemini-2.5-flash',
+            contents: text,
+            config: {
+                systemInstruction: `You are the automated assistant for Bangali Foundation. Answer accurately in ${targetLanguageName}. Do not include any other languages.`,
+                temperature: 0.3
+            }
+        });
+
+        // Ensure result.text exists before accessing it
+        aiResponseText = result.text || "I'm sorry, I couldn't generate a response.";
+        
+        await axios.post(`https://graph.facebook.com/v17.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
+            recipient: { id: sender_psid },
+            message: { text: aiResponseText }
+        });
+
+        // Fixed: Log only after successful generation
+        await logChatToSheet(sender_psid, text, aiResponseText);
+
+    } catch (error) {
+        console.error('❌ Gemini API Error:', error.message);
+        aiResponseText = userLang === 'TR' ? "Şu anda yoğunluk yaşıyoruz, lütfen bir dakika içinde tekrar deneyin." : 
+                         userLang === 'AR' ? "نواجه ضغطاً حالياً، يرجى المحاولة بعد دقيقة." : 
+                         userLang === 'BN' ? "দুঃখিত, এই মুহূর্তে সার্ভারে অতিরিক্ত চাপ রয়েছে, অনুগ্রহ করে এক মিনিট পরে আবার চেষ্টা করুন।" : 
+                         "Our servers are busy, please try again in a minute.";
+        
+        await axios.post(`https://graph.facebook.com/v17.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
+            recipient: { id: sender_psid },
+            message: { text: aiResponseText }
+        });
+    }
+}
     } 
   } else {
     res.sendStatus(404);

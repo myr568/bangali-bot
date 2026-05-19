@@ -397,14 +397,15 @@ app.post('/webhook', async (req, res) => {
 
         try {
           // Use the stable, reliable model
-          const result = await ai.models.generateContent({
-            model: 'gemini-1.5-flash',
-            contents: text,
-            config: {
-              systemInstruction: systemInstructionText,
-              temperature: 0.3
-            }
-          });
+          // Replace the model line in your Stage 4 block with this:
+const result = await ai.models.generateContent({
+  model: 'models/gemini-1.5-flash', // Added the 'models/' prefix
+  contents: text,
+  config: {
+    systemInstruction: systemInstructionText,
+    temperature: 0.3
+  }
+});
           aiResponseText = result.text;
         } catch (error) {
           console.error('❌ Gemini API Error:', error.message);

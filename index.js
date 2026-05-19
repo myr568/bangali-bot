@@ -293,28 +293,24 @@ app.post('/webhook', async (req, res) => {
       if (text || payload) logBotUsage();
 
       // GATEKEEPER: Force Language Selection
-const currentLang = await getUserLanguage(sender_psid);
-console.log(`DEBUG: User ${sender_psid} current language is: ${currentLang}`); // Add this to see what's happening
-
-// If currentLang is null, undefined, or empty, FORCE the menu
-if (!currentLang || currentLang === "undefined" || currentLang === "") {
-  // Only show menu if we haven't already processed a language selection in this specific message
-  if (!payload.startsWith("LANG_")) {
-    await axios.post(`https://graph.facebook.com/v17.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
-      recipient: { id: sender_psid },
-      message: {
-        text: "Welcome! Please choose your preferred language:\n\nস্বাগতম! ভাষা নির্বাচন করুন:",
-        quick_replies: [
-          { content_type: "text", title: "English 🇬🇧", payload: "LANG_EN" },
-          { content_type: "text", title: "বাংলা 🇧🇩", payload: "LANG_BN" },
-          { content_type: "text", title: "Türkçe 🇹🇷", payload: "LANG_TR" },
-          { content_type: "text", title: "العربية 🇸🇦", payload: "LANG_AR" }
-        ]
+      const currentLang = await getUserLanguage(sender_psid);
+      if (!currentLang || currentLang === "undefined" || currentLang === "") {
+        if (!payload.startsWith("LANG_")) {
+          await axios.post(`https://graph.facebook.com/v17.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
+            recipient: { id: sender_psid },
+            message: {
+              text: "Welcome! Please choose your preferred language:\n\nস্বাগতম! ভাষা নির্বাচন করুন:",
+              quick_replies: [
+                { content_type: "text", title: "English 🇬🇧", payload: "LANG_EN" },
+                { content_type: "text", title: "বাংলা 🇧🇩", payload: "LANG_BN" },
+                { content_type: "text", title: "Türkçe 🇹🇷", payload: "LANG_TR" },
+                { content_type: "text", title: "العربية 🇸🇦", payload: "LANG_AR" }
+              ]
+            }
+          });
+          continue;
+        }
       }
-    });
-    continue;
-  }
-}
 
       // STAGE 1: Process Language Selection
       if (payload.startsWith("LANG_")) {
@@ -370,23 +366,9 @@ if (!currentLang || currentLang === "undefined" || currentLang === "") {
       }
 
       // STAGE 4: FAQ Sheet Lookup + Gemini Conversation
-      // STAGE 4: FAQ + Gemini Conversation
-if (text) {
-  // Always fetch the latest preference from the source of truth
-  const userLang = await getUserLanguage(sender_psid); 
-  
-  // Map the language code to the full name for the AI system instruction
-  let targetLanguageName = userLang === 'TR' ? "Turkish" : 
-                           userLang === 'BN' ? "Bangla" : 
-                           userLang === 'AR' ? "Arabic" : "English";
-
-  // Use this targetLanguageName in your system instruction
-  const systemInstructionText = `You are the official assistant for Bangali Foundation. 
-  Answer the user's request accurately in ${targetLanguageName}. 
-  Do not include any other languages.`;
-  
-  // ... rest of your AI call
-}
+      if (text) {
+        const userLang = await getUserLanguage(sender_psid);
+        let targetLanguageName = userLang === 'TR' ? "Turkish" : userLang === 'BN' ? "Bangla" : userLang === 'AR' ? "Arabic" : "English";
         
         const matchedFAQAnswer = await checkFAQSheet(text);
         if (matchedFAQAnswer) {
@@ -399,10 +381,11 @@ if (text) {
         }
 
         const systemInstructionText = `You are the official assistant for Bangali Foundation. Our mission: humanitarian relief, water wells, and education. Answer in ${targetLanguageName}.`;
+        
         let aiResponseText = "";
         try {
           const result = await ai.models.generateContent({ model: 'models/gemini-2.5-flash', contents: text, config: { systemInstruction: systemInstructionText, temperature: 0.3 } });
-          aiResponseText = result.text;
+          aiResponseText = result.text || "I'm sorry, I couldn't generate a response.";
         } catch (error) {
           await new Promise(resolve => setTimeout(resolve, 1500));
           try {
@@ -410,10 +393,11 @@ if (text) {
             aiResponseText = retry.text;
           } catch (e) { aiResponseText = "Servers busy, please try again."; }
         }
+        
         await axios.post(`https://graph.facebook.com/v17.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, { recipient: { id: sender_psid }, message: { text: aiResponseText } });
         await logChatToSheet(sender_psid, text, aiResponseText);
       }
-    }
+    } 
   } else {
     res.sendStatus(404);
   }

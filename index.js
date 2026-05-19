@@ -29,23 +29,22 @@ async function initializeGoogleAuth() {
   try {
     let credentials;
 
-    // Use environment variable on Render, otherwise look for the local file
+    // --- DEBUGGING BLOCK ---
     if (process.env.GOOGLE_CREDS) {
-      console.log('☁️ Detected Render environment: Loading GOOGLE_CREDS...');
-      let credsEnv = process.env.GOOGLE_CREDS.trim();
-      // Remove surrounding quotes if they exist
-      if (credsEnv.startsWith("'") && credsEnv.endsWith("'")) credsEnv = credsEnv.slice(1, -1);
-      if (credsEnv.startsWith('"') && credsEnv.endsWith('"')) credsEnv = credsEnv.slice(1, -1);
-      credentials = JSON.parse(credsEnv);
+      const rawEnv = process.env.GOOGLE_CREDS.trim();
+      console.log("DEBUG: GOOGLE_CREDS detected. Length:", rawEnv.length);
+      console.log("DEBUG: First 10 characters:", rawEnv.substring(0, 10));
+      
+      credentials = JSON.parse(rawEnv);
     } else {
-      // Local development: Point this to your local key filename
-      // Make sure your key filename matches exactly
+      console.log("DEBUG: GOOGLE_CREDS is missing from process.env!");
       const keyPath = path.join(__dirname, 'YOUR_KEY_FILENAME.json'); 
-      console.log('🔍 Detected local environment: Loading from file...');
+      console.log('🔍 Attempting local load from:', keyPath);
       const rawData = fs.readFileSync(keyPath);
       credentials = JSON.parse(rawData);
     }
 
+    // --- AUTHENTICATION LOGIC ---
     const formattedPrivateKey = credentials.private_key.replace(/\\n/g, '\n');
     const auth = new google.auth.JWT(
       credentials.client_email,
@@ -59,7 +58,7 @@ async function initializeGoogleAuth() {
     sheetsClient = google.sheets({ version: 'v4', auth: googleAuthToken });
     console.log('✅ Google Sheets Identity established successfully!');
   } catch (err) {
-    console.error('❌ Authentication failed:', err.message);
+    console.error('❌ Authentication failed in initializeGoogleAuth:', err.message);
   }
 }
 

@@ -13,27 +13,37 @@ const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
 
 const SPREADSHEET_ID = '16kuhcidjptgfxqaB1y0ujeEb59zrewVkUw7o6bVWynw';
 let sheetsClient;
+let googleAuthToken; // Holds authenticated credentials globally
 
-// FIXED: Global memory cache initialization to keep track of sessions instantly
+// Session memory cache layer
 const localLangCache = new Map();
 
-try {
-  const credentials = JSON.parse(process.env.GOOGLE_CREDS);
-  const formattedPrivateKey = credentials.private_key.replace(/\\n/g, '\n');
+async function initializeGoogleAuth() {
+  try {
+    if (!process.env.GOOGLE_CREDS) {
+      console.error('❌ GOOGLE_CREDS environment variable is missing!');
+      return;
+    }
+    const credentials = JSON.parse(process.env.GOOGLE_CREDS);
+    const formattedPrivateKey = credentials.private_key.replace(/\\n/g, '\n');
 
-  const auth = new google.auth.JWT(
-    credentials.client_email,
-    null,
-    formattedPrivateKey,
-    ['https://www.googleapis.com/auth/spreadsheets']
-  );
+    const auth = new google.auth.JWT(
+      credentials.client_email,
+      null,
+      formattedPrivateKey,
+      ['https://www.googleapis.com/auth/spreadsheets']
+    );
 
-  // Bind the auth object directly inside the options parameter 
-  sheetsClient = google.sheets({ version: 'v4', auth: auth });
-  console.log('✅ Google Sheets Identity established successfully!');
-} catch (err) {
-  console.error('❌ Failed to initialize Google Sheets Auth:', err.message);
+    // FIX: Force token activation to eliminate the "unregistered callers" 403 issue
+    await auth.authorize();
+    googleAuthToken = auth;
+    sheetsClient = google.sheets({ version: 'v4', auth: googleAuthToken });
+    console.log('✅ Google Sheets Identity & Access Token established successfully!');
+  } catch (err) {
+    console.error('❌ Failed to initialize Google Sheets Auth:', err.message);
+  }
 }
+initializeGoogleAuth();
 
 // Ngrok warning skip
 app.use((req, res, next) => {
@@ -49,10 +59,7 @@ async function saveUserLanguage(psid, languageCode) {
   localLangCache.set(safePsid, languageCode);
   console.log(`📍 Local memory cache set: ${safePsid} -> ${languageCode}`);
 
-  if (!sheetsClient) {
-    console.error('⚠️ Sheets Client is offline. Saved only to local memory.');
-    return;
-  }
+  if (!sheetsClient) return;
   try {
     const rangeName = 'UserPrefs!A:B';
     const response = await sheetsClient.spreadsheets.values.get({
@@ -63,7 +70,6 @@ async function saveUserLanguage(psid, languageCode) {
     const rows = response.data.values || [];
     let userRowIndex = -1;
 
-    // Loop checks with absolute string conversion to prevent type mismatches
     for (let i = 0; i < rows.length; i++) {
       if (rows[i] && rows[i][0] && String(rows[i][0]).trim() === safePsid) {
         userRowIndex = i + 1;
@@ -72,7 +78,6 @@ async function saveUserLanguage(psid, languageCode) {
     }
 
     if (userRowIndex !== -1) {
-      // Update existing row
       await sheetsClient.spreadsheets.values.update({
         spreadsheetId: SPREADSHEET_ID,
         range: `UserPrefs!B${userRowIndex}`,
@@ -81,7 +86,6 @@ async function saveUserLanguage(psid, languageCode) {
       });
       console.log(`🔄 Google Sheet Updated Successfully: ${safePsid} -> ${languageCode}`);
     } else {
-      // Append new row explicitly below headers
       await sheetsClient.spreadsheets.values.append({
         spreadsheetId: SPREADSHEET_ID,
         range: rangeName,
@@ -91,13 +95,7 @@ async function saveUserLanguage(psid, languageCode) {
       console.log(`💾 Google Sheet Appended (New Entry): ${safePsid} -> ${languageCode}`);
     }
   } catch (err) {
-    console.error('❌ Google Sheets WRITE Engine failed.');
-    if (err.response) {
-      console.error('Status:', err.response.status);
-      console.error('Detailed Error Data:', JSON.stringify(err.response.data));
-    } else {
-      console.error('Error Message:', err.message);
-    }
+    console.error('❌ Google Sheets WRITE Engine failed:', err.message);
   }
 }
 
@@ -105,7 +103,6 @@ async function saveUserLanguage(psid, languageCode) {
 async function getUserLanguage(psid) {
   const safePsid = String(psid).trim();
 
-  // Instant local memory lookup
   if (localLangCache.has(safePsid)) {
     return localLangCache.get(safePsid);
   }
@@ -124,14 +121,35 @@ async function getUserLanguage(psid) {
       }
     }
   } catch (err) {
-    console.error('❌ Google Sheets READ Engine failed.');
-    if (err.response) {
-      console.error('Detailed Read Error Data:', JSON.stringify(err.response.data));
-    } else {
-      console.error('Error Message:', err.message);
-    }
+    console.error('❌ Google Sheets READ Engine failed:', err.message);
   }
-  return 'EN'; // FIXED: Defaults back to English instead of Bangla if sheet engine fails entirely
+  return 'EN'; 
+}
+
+// NEW Helper: Check FAQ sheet tab for dynamic keywords matching
+async function checkFAQSheet(incomingText) {
+  if (!sheetsClient) return null;
+  const cleanInput = incomingText.toLowerCase().trim();
+  try {
+    const response = await sheetsClient.spreadsheets.values.get({
+      spreadsheetId: SPREADSHEET_ID,
+      range: 'FAQ!A:B', // Looks up Question/Keyword in Col A, Answer text in Col B
+    });
+    const rows = response.data.values || [];
+    for (const row of rows) {
+      if (row && row[0] && row[1]) {
+        const keyword = row[0].toLowerCase().trim();
+        // If the user text matches or contains the sheet keyword precisely
+        if (cleanInput.includes(keyword) || keyword.includes(cleanInput)) {
+          console.log(`🎯 FAQ sheet keyword hit found: "${row[0]}"`);
+          return row[1]; // Return corresponding Answer text string
+        }
+      }
+    }
+  } catch (err) {
+    console.error('⚠️ FAQ sheet tab parsing skipped or not found:', err.message);
+  }
+  return null;
 }
 
 // GET: Webhook Verification
@@ -238,7 +256,7 @@ app.post('/webhook', async (req, res) => {
           if (optionNum === '2') response_text = "🤝 Gönüllü ekibimizin bir parçası olmak için bu adresten formu doldurun:\n➡️ https://bangalifoundation.org/become-a-volunteer/";
           if (optionNum === '3') response_text = "🆘 Yardıma ihtiyacınız varsa veya bir talebiniz varsa lütfen sorunuzu buraya yazın. Yapay zekamız yardımcı olacaktır.";
           if (optionNum === '4') response_text = "🏗️ Hayata geçirdiğimiz su kuyuları ve eğitim projelerini inceleyin:\n➡️ https://bangalifoundation.org/";
-          if (optionNum === '5') response_text = "ℹ️ Kuruluş amacımız ve faaliyetlerimiz hakkında bilgi edinin:\n➡️ https://bangalifoundation.org/about-us/";
+          if (optionNum === '5') response_text = "ℹ️ Kuruluش amacımız ve faaliyetlerimiz hakkında bilgi edinin:\n➡️ https://bangalifoundation.org/about-us/";
         } else if (lang === 'AR') {
           if (optionNum === '1') response_text = "❤️ لدعمنا وتقديم التبرعات المباشرة، يرجى زيارة موقعنا الرسمي:\n➡️ https://bangalifoundation.org/";
           if (optionNum === '2') response_text = "🤝 لتصبح متطوعاً معنا وتشارك في أعمالنا الإنسانية، يرجى التسجيل هنا:\n➡️ https://bangalifoundation.org/become-a-volunteer/";
@@ -250,7 +268,7 @@ app.post('/webhook', async (req, res) => {
           if (optionNum === '2') response_text = "🤝 আমাদের ভলান্টিয়ার টিমে যোগ দিয়ে মানুষের পাশে দাঁড়াতে এখানে আবেদন করুন:\n➡️ https://bangalifoundation.org/become-a-volunteer/";
           if (optionNum === '3') response_text = "🆘 আপনার যদি কোনো সহযোগিতার প্রয়োজন থাকে, তবে আপনার সমস্যাটি এখানে লিখে জানান। আমাদের টিম এবং এআই আপনাকে গাইড করবে।";
           if (optionNum === '4') response_text = "🏗️ আমাদের রানিং প্রজেক্ট ও পানির পাম্প স্থাপন কার্যক্রম সমূহ দেখতে ভিজিট করুন:\n➡️ https://bangalifoundation.org/";
-          if (optionNum === '5') response_text = "ℹ️ বাঙালি ফাউন্ডেশনের উদ্দেশ্য ও আমাদের কার্যক্রম সম্পর্কে বিস্তারিত জানতে ভিজিট করুন:\n➡️ https://bangalifoundation.org/about-us/";
+          if (optionNum === '5') response_text = "ℹ️ বাঙালি ফাউন্ডেশনের উদ্দেশ্য ও আমাদের কার্যক্রম সম্পর্কে বিস্তারিত জানতে ভিジット করুন:\n➡️ https://bangalifoundation.org/about-us/";
         } else {
           if (optionNum === '1') response_text = "❤️ To support our mission and securely donate, please visit our online portal:\n➡️ https://bangalifoundation.org/";
           if (optionNum === '2') response_text = "🤝 To join our team and make an impact as a volunteer, fill out the form here:\n➡️ https://bangalifoundation.org/become-a-volunteer/";
@@ -268,7 +286,7 @@ app.post('/webhook', async (req, res) => {
         continue;
       }
 
-      // --- STAGE 4: Gemini Conversation with Context Retrieval ---
+      // --- STAGE 4: FAQ Sheet Lookup + Gemini Conversation Fallback ---
       if (text) {
         const userLang = await getUserLanguage(sender_psid);
         
@@ -277,25 +295,50 @@ app.post('/webhook', async (req, res) => {
         if (userLang === 'BN') targetLanguageName = "Bangla";
         if (userLang === 'AR') targetLanguageName = "Arabic";
 
-        let systemContextPrompt = `You are the automated workspace assistant for Bangali Foundation (website: https://bangalifoundation.org/). Answer this user prompt accurately and professionally. CRITICAL: The user's preferred language is ${targetLanguageName}. You MUST write your entire response completely in ${targetLanguageName}. Do not include any other languages.`;
+        // STEP A: Try to match text against your spreadsheet's FAQ tab first
+        const matchedFAQAnswer = await checkFAQSheet(text);
+        
+        if (matchedFAQAnswer) {
+          try {
+            await axios.post(`https://graph.facebook.com/v17.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
+              recipient: { id: sender_psid },
+              message: { text: matchedFAQAnswer }
+            });
+            console.log(`✅ Message answered directly from FAQ tab for user preference: ${targetLanguageName}`);
+          } catch (error) { console.error('❌ Error sending FAQ answer:', error.message); }
+          continue; // Skips Gemini processing completely since sheet answered it!
+        }
+
+        // STEP B: Fallback to Gemini if no keyword matched the FAQ tab
+        let systemInstructionText = `You are the automated workspace assistant for Bangali Foundation (website: https://bangalifoundation.org/). Answer this user prompt accurately and professionally. CRITICAL: The user's preferred language is ${targetLanguageName}. You MUST write your entire response completely in ${targetLanguageName}. Do not include any other languages.`;
         let aiResponseText = "";
 
         try {
+          // Correct implementation of configuration params to stop high demand bottlenecks
           const result = await ai.models.generateContent({
             model: 'gemini-2.5-flash',
-            contents: `${systemContextPrompt}\n\nUser Question: ${text}`,
+            contents: text,
+            config: {
+              systemInstruction: systemInstructionText,
+              temperature: 0.3
+            }
           });
           aiResponseText = result.text;
         } catch (primaryError) {
-          console.warn('⚠️ Gemini 2.5 busy, pulling backup model engine...');
+          console.warn('⚠️ Gemini 2.5 busy, pulling backup 8B engine...', primaryError.message);
           try {
+            // FIX: Corrected SDK endpoint syntax for the lightweight backup model to stop 404 errors
             const backupResult = await ai.models.generateContent({
-              model: 'gemini-1.5-flash',
-              contents: `${systemContextPrompt}\n\nUser Question: ${text}`,
+              model: 'gemini-1.5-flash-8b',
+              contents: text,
+              config: {
+                systemInstruction: systemInstructionText,
+                temperature: 0.3
+              }
             });
             aiResponseText = backupResult.text;
           } catch (backupError) {
-            console.error('❌ All Gemini engines are currently overloaded:', backupError.message);
+            console.error('❌ All Gemini engines overloaded:', backupError.message);
             
             if (userLang === 'TR') aiResponseText = "Uzun süreli yoğunluk nedeniyle sunucu yanıt vermedi. Lütfen birkaç dakika sonra tekrar deneyin.";
             else if (userLang === 'AR') aiResponseText = "عذراً، الخادم يواجه ضغطاً كبيراً حالياً. يرجى المحاولة مرة أخرى بعد قليل.";
@@ -310,13 +353,11 @@ app.post('/webhook', async (req, res) => {
               recipient: { id: sender_psid },
               message: { text: aiResponseText }
             });
-            console.log(`✅ Message processed successfully using language row target: ${targetLanguageName}`);
-          } catch (error) {
-            console.error('❌ Error dispatching out bound payload:', error.message);
-          }
+            console.log(`✅ Message processed successfully via Gemini: ${targetLanguageName}`);
+          } catch (error) { console.error('❌ Error dispatching out bound payload:', error.message); }
         }
       }
-    } // Closes the entry loop safely
+    } // Closes the entry loop
   } else {
     res.sendStatus(404);
   }

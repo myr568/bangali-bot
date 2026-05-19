@@ -19,33 +19,34 @@ const localLangCache = new Map();
 
 
 
+const fs = require('fs');
+const path = require('path');
 
 
 
 
 async function initializeGoogleAuth() {
   try {
-    let credsEnv = process.env.GOOGLE_CREDS;
-    
-    if (!credsEnv) {
-      console.error('❌ GOOGLE_CREDS environment variable is completely missing on Render!');
-      return;
-    }
+    let credentials;
 
-    // Clean up any weird string corruptions or trailing quotes from Render
-    credsEnv = credsEnv.trim();
-    if (credsEnv.startsWith("'") && credsEnv.endsWith("'")) credsEnv = credsEnv.slice(1, -1);
-    if (credsEnv.startsWith('"') && credsEnv.endsWith('"')) credsEnv = credsEnv.slice(1, -1);
-
-    const credentials = JSON.parse(credsEnv);
-    
-    if (!credentials.private_key) {
-      console.error('❌ JSON parsed successfully, but "private_key" property is missing inside it!');
-      return;
+    // Use environment variable on Render, otherwise look for the local file
+    if (process.env.GOOGLE_CREDS) {
+      console.log('☁️ Detected Render environment: Loading GOOGLE_CREDS...');
+      let credsEnv = process.env.GOOGLE_CREDS.trim();
+      // Remove surrounding quotes if they exist
+      if (credsEnv.startsWith("'") && credsEnv.endsWith("'")) credsEnv = credsEnv.slice(1, -1);
+      if (credsEnv.startsWith('"') && credsEnv.endsWith('"')) credsEnv = credsEnv.slice(1, -1);
+      credentials = JSON.parse(credsEnv);
+    } else {
+      // Local development: Point this to your local key filename
+      // Make sure your key filename matches exactly
+      const keyPath = path.join(__dirname, 'YOUR_KEY_FILENAME.json'); 
+      console.log('🔍 Detected local environment: Loading from file...');
+      const rawData = fs.readFileSync(keyPath);
+      credentials = JSON.parse(rawData);
     }
 
     const formattedPrivateKey = credentials.private_key.replace(/\\n/g, '\n');
-
     const auth = new google.auth.JWT(
       credentials.client_email,
       null,
@@ -56,10 +57,9 @@ async function initializeGoogleAuth() {
     await auth.authorize();
     googleAuthToken = auth;
     sheetsClient = google.sheets({ version: 'v4', auth: googleAuthToken });
-    console.log('✅ Google Sheets Identity & Access Token established successfully!');
+    console.log('✅ Google Sheets Identity established successfully!');
   } catch (err) {
-    console.error('❌ Failed to initialize Google Sheets Auth:', err.message);
-    console.error('🔍 Debug Info - Raw value starting characters:', process.env.GOOGLE_CREDS ? process.env.GOOGLE_CREDS.substring(0, 40) : 'undefined');
+    console.error('❌ Authentication failed:', err.message);
   }
 }
 

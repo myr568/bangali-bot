@@ -1,7 +1,7 @@
 const express = require('express');
 const bodyParser = require('body-parser');
 const axios = require('axios');
-const { google } = require('googleapis'); // Ensure you run: npm install googleapis
+const { google } = require('googleapis');
 const { GoogleGenAI } = require('@google/genai');
 
 const app = express();
@@ -11,20 +11,24 @@ const PAGE_ACCESS_TOKEN = process.env.PAGE_ACCESS_TOKEN;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
 
-// Google Sheets Setup using your GOOGLE_CREDS environment variable
 const SPREADSHEET_ID = '16kuhcidjptgfxqaB1y0ujeEb59zrewVkUw7o6bVWynw';
 let sheetsClient;
 
 try {
   const credentials = JSON.parse(process.env.GOOGLE_CREDS);
+  
+  // FIX: Safely repair broken newline strings common in Render environment variables
+  const formattedPrivateKey = credentials.private_key.replace(/\\n/g, '\n');
+
   const auth = new google.auth.JWT(
     credentials.client_email,
     null,
-    credentials.private_key,
+    formattedPrivateKey,
     ['https://www.googleapis.com/auth/spreadsheets']
   );
+  
   sheetsClient = google.sheets({ version: 'v4', auth });
-  console.log('✅ Google Sheets Client connected successfully');
+  console.log('✅ Google Sheets Client connected successfully!');
 } catch (err) {
   console.error('❌ Failed to initialize Google Sheets Auth:', err.message);
 }
@@ -39,7 +43,10 @@ const processedMids = new Map();
 
 // Helper: Save or update user language selection in UserPrefs sheet
 async function saveUserLanguage(psid, languageCode) {
-  if (!sheetsClient) return;
+  if (!sheetsClient) {
+    console.error('⚠️ Sheets Client is offline. Cannot save language.');
+    return;
+  }
   try {
     const rangeName = 'UserPrefs!A:B';
     const response = await sheetsClient.spreadsheets.values.get({
@@ -51,30 +58,31 @@ async function saveUserLanguage(psid, languageCode) {
     let userRowIndex = -1;
 
     for (let i = 0; i < rows.length; i++) {
-      if (rows[i][0] === psid) {
+      if (rows[i] && rows[i][0] === psid) {
         userRowIndex = i + 1;
         break;
       }
     }
 
     if (userRowIndex !== -1) {
-      // Update existing user preference row
+      // Update existing row
       await sheetsClient.spreadsheets.values.update({
         spreadsheetId: SPREADSHEET_ID,
         range: `UserPrefs!B${userRowIndex}`,
         valueInputOption: 'USER_ENTERED',
         requestBody: { values: [[languageCode]] }
       });
+      console.log(`🔄 Updated sheet preference: ${psid} -> ${languageCode}`);
     } else {
-      // Append a completely new user preference row
+      // Append new row
       await sheetsClient.spreadsheets.values.append({
         spreadsheetId: SPREADSHEET_ID,
         range: rangeName,
         valueInputOption: 'USER_ENTERED',
         requestBody: { values: [[psid, languageCode]] }
       });
+      console.log(`💾 Saved brand new preference: ${psid} -> ${languageCode}`);
     }
-    console.log(`💾 User preference saved to sheet: ${psid} -> ${languageCode}`);
   } catch (err) {
     console.error('❌ Error writing user language preference to sheet:', err.message);
   }
@@ -82,7 +90,7 @@ async function saveUserLanguage(psid, languageCode) {
 
 // Helper: Read user language preference from UserPrefs sheet
 async function getUserLanguage(psid) {
-  if (!sheetsClient) return 'EN'; // Fallback to English
+  if (!sheetsClient) return 'BN'; // Default fallback to Bangla if client isn't ready
   try {
     const response = await sheetsClient.spreadsheets.values.get({
       spreadsheetId: SPREADSHEET_ID,
@@ -90,13 +98,19 @@ async function getUserLanguage(psid) {
     });
     const rows = response.data.values || [];
     for (const row of rows) {
-      if (row[0] === psid) return row[1];
+      if (row && row[0] === psid) return row[1];
     }
   } catch (err) {
     console.error('❌ Error reading preference from sheet:', err.message);
   }
-  return 'EN';
+  return 'BN'; // Default fallback to Bangla
 }
+
+
+
+
+
+
 
 // GET: Webhook Verification
 app.get('/webhook', (req, res) => {

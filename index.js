@@ -402,8 +402,9 @@ app.post('/webhook', async (req, res) => {
 
 
         try {
-         const result = await ai.models.generateContent({
-  model: 'gemini-1.5-flash', 
+        // Change this line in your Stage 4 block
+const result = await ai.models.generateContent({
+  model: 'gemini-1.5-flash-002', // Use the specific stable version
   contents: text,
   config: {
     systemInstruction: systemInstructionText,

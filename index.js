@@ -265,7 +265,6 @@ async function logChatToSheet(psid, userText, botResponse) {
 
 
 
-
 app.post('/webhook', async (req, res) => {
   const body = req.body;
 
@@ -291,7 +290,7 @@ app.post('/webhook', async (req, res) => {
       const payload = webhook_event.message?.quick_reply?.payload || webhook_event.postback?.payload || "";
       if (text || payload) logBotUsage();
 
-      // --- STRUCTURAL BUTTONS LIST (Quick Replies Setup) ---
+      // --- STRUCTURAL BUTTONS DEFINITIONS ---
       const quickRepliesBN = [
         { content_type: "text", title: "❤️ ডোনেট করুন", payload: "QUICK_DONATE" },
         { content_type: "text", title: "🤝 ভলান্টিয়ার হোন", payload: "QUICK_VOLUNTEER" },
@@ -304,27 +303,86 @@ app.post('/webhook', async (req, res) => {
         { content_type: "text", title: "🆘 Need Help", payload: "QUICK_HELP" }
       ];
 
-      // --- HANDLE MAIN MENU BUTTON CLICKS DIRECTLY ---
-      if (payload.startsWith("QUICK_")) {
-        let actionResponse = "";
-        if (payload === "QUICK_DONATE") {
-          actionResponse = "❤️ আমাদের মানবিক কাজে ডোনেট করতে এবং সাহায্য পাঠাতে আমাদের অফিশিয়াল ওয়েবসাইট ভিジット করুন:\n➡️ https://bangalifoundation.org/\n\nTo support our mission, please visit our online portal:\n➡️ https://bangalifoundation.org/";
-        } else if (payload === "QUICK_VOLUNTEER") {
-          actionResponse = "🤝 আমাদের ভলান্টিয়ার টিমে যোগ দিয়ে মানুষের পাশে দাঁড়াতে এখানে আবেদন করুন:\n➡️ https://bangalifoundation.org/become-a-volunteer/\n\nTo join our team as a volunteer, fill out the form here:\n➡️ https://bangalifoundation.org/become-a-volunteer/";
-        } else if (payload === "QUICK_HELP") {
-          actionResponse = "🆘 আপনার যদি কোনো সহযোগিতার প্রয়োজন থাকে, তবে আপনার সমস্যাটি এখানে লিখে জানান অথবা আমাদের হোয়াটসঅ্যাপে যোগাযোগ করুন:\n📲 https://wa.me/8801901641140";
+      const quickRepliesTR = [
+        { content_type: "text", title: "❤️ Bağış Yap", payload: "QUICK_DONATE" },
+        { content_type: "text", title: "🤝 Gönüllü Ol", payload: "QUICK_VOLUNTEER" },
+        { content_type: "text", title: "🆘 Yardım Alın", payload: "QUICK_HELP" }
+      ];
+
+      const quickRepliesAR = [
+        { content_type: "text", title: "❤️ التبرع والدعم", payload: "QUICK_DONATE" },
+        { content_type: "text", title: "🤝 كن متطوعاً", payload: "QUICK_VOLUNTEER" },
+        { content_type: "text", title: "🆘 طلب مساعدة", payload: "QUICK_HELP" }
+      ];
+
+      // --- STAGE 1: HANDLE FIRST-TIME LANGUAGE BUTTON CLICKS ---
+      if (payload.startsWith("LANG_")) {
+        const selectedLang = payload.split("_")[1]; // EN, BN, TR, AR
+        await saveUserLanguage(sender_psid, selectedLang);
+
+        let introText = "Please select an option from our structural services down below 👇";
+        let currentQuickReplies = quickRepliesEN;
+
+        if (selectedLang === 'BN') {
+          introText = "অনুগ্রহ করে নিচে দেওয়া আমাদের সেবাসমূহ থেকে যেকোনো একটি অপশন বেছে নিন 👇";
+          currentQuickReplies = quickRepliesBN;
+        } else if (selectedLang === 'TR') {
+          introText = "Lütfen devam etmek için aşağıdaki hizmetlerimizden bir seçenek belirleyin 👇";
+          currentQuickReplies = quickRepliesTR;
+        } else if (selectedLang === 'AR') {
+          introText = "يرجى تحديد أحد خدماتنا أدناه للمتابعة 👇";
+          currentQuickReplies = quickRepliesAR;
         }
 
         await axios.post(`https://graph.facebook.com/v17.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
           recipient: { id: sender_psid },
-          message: { text: actionResponse }
+          message: { 
+            text: introText, 
+            quick_replies: currentQuickReplies 
+          }
         });
         continue;
       }
 
-      // --- PROCESS TEXT MESSAGES ---
+      // --- STAGE 2: HANDLE STRUCTURAL MAIN MENU ACTIONS ---
+      if (payload.startsWith("QUICK_")) {
+        const userLang = await getUserLanguage(sender_psid);
+        let actionResponse = "";
+        let currentQuickReplies = quickRepliesBN;
+
+        if (userLang === 'TR') currentQuickReplies = quickRepliesTR;
+        else if (userLang === 'AR') currentQuickReplies = quickRepliesAR;
+        else if (userLang === 'EN') currentQuickReplies = quickRepliesEN;
+
+        if (payload === "QUICK_DONATE") {
+          if (userLang === 'BN') actionResponse = "❤️ আমাদের মানবিক কাজে ডোনেট করতে এবং সাহায্য পাঠাতে আমাদের অফিশিয়াল ওয়েবসাইট ভিジット করুন:\n➡️ https://bangalifoundation.org/";
+          else if (userLang === 'TR') actionResponse = "❤️ İnsani yardım çalışmalarımızı desteklemek ve bağış yapmak için resmi web sitemizi ziyaret edin:\n➡️ https://bangalifoundation.org/";
+          else if (userLang === 'AR') actionResponse = "❤️ لدعم أعمالنا الإنسانية وتقديم التبرعات، يرجى زيارة موقعنا الرسمي:\n➡️ https://bangalifoundation.org/";
+          else actionResponse = "❤️ To support our humanitarian mission and make a donation, please visit our official website:\n➡️ https://bangalifoundation.org/";
+        } else if (payload === "QUICK_VOLUNTEER") {
+          if (userLang === 'BN') actionResponse = "🤝 আমাদের ভলান্টিয়ার টিমে যোগ দিয়ে মানুষের পাশে দাঁড়াতে এখানে আবেদন করুন:\n➡️ https://bangalifoundation.org/become-a-volunteer/";
+          else if (userLang === 'TR') actionResponse = "🤝 Gönüllü ekibimize katılmak ve insanlara destek olmak için buradan başvurun:\n➡️ https://bangalifoundation.org/become-a-volunteer/";
+          else if (userLang === 'AR') actionResponse = "🤝 للانضمام إلى فريق المتطوعين لدينا ومساعدة المحتاجين، تقدم بطلبك هنا:\n➡️ https://bangalifoundation.org/become-a-volunteer/";
+          else actionResponse = "🤝 To join our volunteer team and stand by those in need, apply here:\n➡️ https://bangalifoundation.org/become-a-volunteer/";
+        } else if (payload === "QUICK_HELP") {
+          if (userLang === 'BN') actionResponse = "🆘 আপনার যদি কোনো সহযোগিতার প্রয়োজন থাকে, তবে আপনার সমস্যাটি এখানে লিখে জানান অথবা আমাদের সরাসরি হোয়াটসঅ্যাপ নাম্বারে যোগাযোগ করুন:\n📲 https://wa.me/8801901641140";
+          else if (userLang === 'TR') actionResponse = "🆘 Herhangi bir yardıma ihtiyacınız varsa, lütfen sorununuzu buraya yazın veya doğrudan WhatsApp hattımızdan bizimle iletişime geçin:\n📲 https://wa.me/8801901641140";
+          else if (userLang === 'AR') actionResponse = "🆘 إذا كنت بحاجة إلى أي مساعدة، يرجى كتابة مشكلتك هنا أو التواصل معنا مباشرة عبر الواتساب:\n📲 https://wa.me/8801901641140";
+          else actionResponse = "🆘 If you need any assistance, please describe your issue here or contact our support directly on WhatsApp:\n📲 https://wa.me/8801901641140";
+        }
+
+        await axios.post(`https://graph.facebook.com/v17.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
+          recipient: { id: sender_psid },
+          message: { 
+            text: actionResponse,
+            quick_replies: currentQuickReplies
+          }
+        });
+        continue;
+      }
+
+      // --- STAGE 3: PROCESS INCOMING USER TEXT MESSAGES ---
       if (text) {
-        // Default to Bangla to catch standard Bangla script and Banglish (Latin alphabet Bangla)
         let conversationLang = "BN"; 
         let currentQuickReplies = quickRepliesBN;
         
@@ -333,16 +391,19 @@ app.post('/webhook', async (req, res) => {
 
         if (hasArabic) {
           conversationLang = "AR";
-          currentQuickReplies = quickRepliesEN; 
+          currentQuickReplies = quickRepliesAR; 
         } else if (hasTurkish) {
           conversationLang = "TR";
-          currentQuickReplies = quickRepliesEN;
-        } 
-        // If it is regular English text, we only switch to formal English responses 
-        // if they use explicit global keywords, otherwise Gemini treats Latin letters as Banglish.
-        else if (/^(hello|hi|hey|good morning|dear|sir|english|info)/i.test(text.trim())) {
+          currentQuickReplies = quickRepliesTR;
+        } else if (/^(hello|hi|hey|good morning|dear|sir|english|info)/i.test(text.trim())) {
           conversationLang = "EN";
           currentQuickReplies = quickRepliesEN;
+        } else {
+          // Check if they have an existing saved language in sheets to keep their menu layout consistent
+          const savedLang = await getUserLanguage(sender_psid);
+          if (savedLang === 'TR') currentQuickReplies = quickRepliesTR;
+          else if (savedLang === 'AR') currentQuickReplies = quickRepliesAR;
+          else if (savedLang === 'EN') currentQuickReplies = quickRepliesEN;
         }
 
         // STEP 1: Search FAQ Sheet First
@@ -365,12 +426,11 @@ app.post('/webhook', async (req, res) => {
         if (conversationLang === "AR") targetLanguageName = "Arabic";
         if (conversationLang === "EN") targetLanguageName = "English";
 
-        // We add a specific rule telling Gemini to read Banglish and reply in pure Bangla script
         const systemInstructionText = `You are the official automated assistant for Bangali Foundation (https://bangalifoundation.org/).
         Our primary mission: establishing safe water wells, educational support, and running emergency relief campaigns for underserved communities.
         
         RULES:
-        1. If the user writes in 'Banglish' (Bangla language using English/Latin alphabets like 'ami jante chai' or 'kivabe help korbo'), you must understand it perfectly, but ALWAYS reply using proper Bangla script (বাংলা অক্ষর).
+        1. If the user writes in 'Banglish' (Bangla language using English/Latin alphabets like 'ami jante chai'), understand it perfectly, but ALWAYS reply using proper Bangla script (বাংলা অক্ষর).
         2. Answer clearly, accurately, and politely in ${targetLanguageName}.
         3. Always look to guide the user naturally to the main website pages (e.g., https://bangalifoundation.org/ or https://bangalifoundation.org/become-a-volunteer/) whenever they express interest in our programs, donations, or actions.
         4. If a user asks a convoluted, repetitive, or unresolvable question that doesn't match our mission, gently guide them to connect with our human staff via WhatsApp using this link: https://wa.me/8801901641140`;

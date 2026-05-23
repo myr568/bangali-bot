@@ -292,7 +292,6 @@ app.post('/webhook', async (req, res) => {
       if (text || payload) logBotUsage();
 
       // --- STRUCTURAL BUTTONS LIST (Quick Replies Setup) ---
-      // These will be offered at the bottom of standard messages so options never disappear
       const quickRepliesBN = [
         { content_type: "text", title: "❤️ ডোনেট করুন", payload: "QUICK_DONATE" },
         { content_type: "text", title: "🤝 ভলান্টিয়ার হোন", payload: "QUICK_VOLUNTEER" },
@@ -325,13 +324,12 @@ app.post('/webhook', async (req, res) => {
 
       // --- PROCESS TEXT MESSAGES ---
       if (text) {
-        // Detect language context dynamically based on input characters
+        // Default to Bangla to catch standard Bangla script and Banglish (Latin alphabet Bangla)
         let conversationLang = "BN"; 
         let currentQuickReplies = quickRepliesBN;
         
         const hasArabic = /[\u0600-\u06FF]/.test(text);
         const hasTurkish = /[çğıöşüÇĞİÖŞÜ]/.test(text);
-        const hasEnglishOnly = /^[A-Za-z0-9\s\-,.:;!?()'"\n]*$/.test(text);
 
         if (hasArabic) {
           conversationLang = "AR";
@@ -339,7 +337,10 @@ app.post('/webhook', async (req, res) => {
         } else if (hasTurkish) {
           conversationLang = "TR";
           currentQuickReplies = quickRepliesEN;
-        } else if (hasEnglishOnly && text.length > 3) {
+        } 
+        // If it is regular English text, we only switch to formal English responses 
+        // if they use explicit global keywords, otherwise Gemini treats Latin letters as Banglish.
+        else if (/^(hello|hi|hey|good morning|dear|sir|english|info)/i.test(text.trim())) {
           conversationLang = "EN";
           currentQuickReplies = quickRepliesEN;
         }
@@ -364,13 +365,15 @@ app.post('/webhook', async (req, res) => {
         if (conversationLang === "AR") targetLanguageName = "Arabic";
         if (conversationLang === "EN") targetLanguageName = "English";
 
+        // We add a specific rule telling Gemini to read Banglish and reply in pure Bangla script
         const systemInstructionText = `You are the official automated assistant for Bangali Foundation (https://bangalifoundation.org/).
         Our primary mission: establishing safe water wells, educational support, and running emergency relief campaigns for underserved communities.
         
         RULES:
-        1. Answer clearly, accurately, and politely in ${targetLanguageName}.
-        2. Always look to guide the user naturally to the main website pages (e.g., https://bangalifoundation.org/ or https://bangalifoundation.org/become-a-volunteer/) whenever they express interest in our programs, donations, or actions.
-        3. If a user asks a convoluted, repetitive, or unresolvable question that doesn't match our mission, gently guide them to connect with our human staff via WhatsApp using this link: https://wa.me/8801901641140`;
+        1. If the user writes in 'Banglish' (Bangla language using English/Latin alphabets like 'ami jante chai' or 'kivabe help korbo'), you must understand it perfectly, but ALWAYS reply using proper Bangla script (বাংলা অক্ষর).
+        2. Answer clearly, accurately, and politely in ${targetLanguageName}.
+        3. Always look to guide the user naturally to the main website pages (e.g., https://bangalifoundation.org/ or https://bangalifoundation.org/become-a-volunteer/) whenever they express interest in our programs, donations, or actions.
+        4. If a user asks a convoluted, repetitive, or unresolvable question that doesn't match our mission, gently guide them to connect with our human staff via WhatsApp using this link: https://wa.me/8801901641140`;
 
         let aiResponseText = "";
         try {
@@ -396,7 +399,6 @@ app.post('/webhook', async (req, res) => {
           }
         }
 
-        // Add a fallback safety handoff link if the response ended up empty or generic
         if (!aiResponseText || aiResponseText.length < 5) {
           aiResponseText = conversationLang === "BN"
             ? "আপনার প্রশ্নের সঠিক উত্তরটি পেতে আমাদের সরাসরি হোয়াটসঅ্যাপ নাম্বারে যোগাযোগ করুন: https://wa.me/8801901641140"
@@ -417,7 +419,6 @@ app.post('/webhook', async (req, res) => {
     res.sendStatus(404);
   }
 });
-
 
 
 

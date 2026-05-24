@@ -283,12 +283,13 @@ app.post('/webhook', async (req, res) => {
         const selectedLang = payload.split("_")[1]; 
         await saveUserLanguage(sender_psid, selectedLang);
 
-        let introText = "Please select an option from our structural services down below 👇";
-        let currentQuickReplies = quickRepliesEN;
+        // FIXED: The structural choices default cleanly to Bangla options unless explicitly overridden
+        let introText = "অনুগ্রহ করে নিচে দেওয়া আমাদের সেবাসমূহ থেকে যেকোনো একটি অপশন বেছে নিন 👇";
+        let currentQuickReplies = quickRepliesBN;
 
-        if (selectedLang === 'BN') {
-          introText = "অনুগ্রহ করে নিচে দেওয়া আমাদের সেবাসমূহ থেকে যেকোনো একটি অপশন বেছে নিন 👇";
-          currentQuickReplies = quickRepliesBN;
+        if (selectedLang === 'EN') {
+          introText = "Please select an option from our structural services down below 👇";
+          currentQuickReplies = quickRepliesEN;
         } else if (selectedLang === 'TR') {
           introText = "Lütfen devam etmek için aşağıdaki hizmetlerimizden bir seçenek belirleyin 👇";
           currentQuickReplies = quickRepliesTR;
@@ -308,7 +309,7 @@ app.post('/webhook', async (req, res) => {
       if (payload.startsWith("QUICK_")) {
         let userLang = await getUserLanguage(sender_psid);
         
-        // FIX 1: If database language comes back null/undefined, override to "BN" (Bengali)
+        // FIXED: Defaults cleanly to "BN" (Bengali) if language configuration isn't tracked or stored yet
         if (!userLang || userLang === "undefined" || userLang === "") {
           userLang = "BN"; 
         }
@@ -348,6 +349,7 @@ app.post('/webhook', async (req, res) => {
 
       // --- STAGE 3: PROCESS INCOMING USER TEXT MESSAGES ---
       if (text) {
+        // FIXED: The target contextual option list structure now defaults directly to quickRepliesBN
         let conversationLang = "BN"; 
         let currentQuickReplies = quickRepliesBN;
         
@@ -368,6 +370,7 @@ app.post('/webhook', async (req, res) => {
           if (savedLang === 'TR') currentQuickReplies = quickRepliesTR;
           else if (savedLang === 'AR') currentQuickReplies = quickRepliesAR;
           else if (savedLang === 'EN') currentQuickReplies = quickRepliesEN;
+          // No else needed here anymore; fallback remains bound to quickRepliesBN natively
         }
 
         // STEP 1: Search FAQ Sheet First
@@ -387,7 +390,6 @@ app.post('/webhook', async (req, res) => {
         if (conversationLang === "AR") targetLanguageName = "Arabic";
         if (conversationLang === "EN") targetLanguageName = "English";
 
-        // FIX 2: Enhanced prompt targeting clear, contextual URL routing matrices
         const systemInstructionText = `You are the official automated assistant for Bangali Foundation (https://bangalifoundation.org/).
         Our primary mission: establishing safe water wells, educational support, and running emergency relief campaigns for underserved communities.
         

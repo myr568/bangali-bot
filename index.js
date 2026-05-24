@@ -3,6 +3,8 @@ const bodyParser = require('body-parser');
 const axios = require('axios');
 const { google } = require('googleapis');
 const { GoogleGenAI } = require('@google/genai');
+const fs = require('fs');
+const path = require('path');
 
 const app = express();
 app.use(bodyParser.json());
@@ -16,20 +18,11 @@ let sheetsClient;
 let googleAuthToken;
 
 const localLangCache = new Map();
-
-
-
-const fs = require('fs');
-const path = require('path');
-
-
-
+const processedMids = new Map();
 
 async function initializeGoogleAuth() {
   try {
     let credentials;
-
-    // --- LOAD CREDENTIALS ---
     if (process.env.GOOGLE_CREDS) {
       console.log("DEBUG: Parsing GOOGLE_CREDS from environment...");
       credentials = JSON.parse(process.env.GOOGLE_CREDS.trim());
@@ -39,14 +32,8 @@ async function initializeGoogleAuth() {
       credentials = JSON.parse(fs.readFileSync(keyPath));
     }
 
-    // --- ROBUST AUTHENTICATION ---
-    // Instead of manual JWT construction, we use 'fromJSON' which is the standard 
-    // way to load a service account key object safely.
     const auth = google.auth.fromJSON(credentials);
-    
-    // Scopes are required for the Auth object to work with Sheets
     const scopedAuth = auth.createScoped(['https://www.googleapis.com/auth/spreadsheets']);
-
     await scopedAuth.authorize();
     googleAuthToken = scopedAuth;
     sheetsClient = google.sheets({ version: 'v4', auth: googleAuthToken });
@@ -54,13 +41,8 @@ async function initializeGoogleAuth() {
     console.log('✅ Google Sheets Identity established successfully using fromJSON!');
   } catch (err) {
     console.error('❌ Authentication failed in initializeGoogleAuth:', err.message);
-    console.error('Full Error Stack:', err.stack); // Added for deeper insight
   }
 }
-
-
-
-
 
 initializeGoogleAuth();
 
@@ -68,8 +50,6 @@ app.use((req, res, next) => {
   res.setHeader('ngrok-skip-browser-warning', 'true');
   next();
 });
-
-const processedMids = new Map();
 
 // Helper: Save or update user language selection
 async function saveUserLanguage(psid, languageCode) {
@@ -125,7 +105,7 @@ async function getUserLanguage(psid) {
     return localLangCache.get(safePsid);
   }
 
-  if (!sheetsClient) return null; // CHANGE THIS FROM 'EN' TO null
+  if (!sheetsClient) return null;
   try {
     const response = await sheetsClient.spreadsheets.values.get({
       spreadsheetId: SPREADSHEET_ID,
@@ -141,9 +121,8 @@ async function getUserLanguage(psid) {
   } catch (err) {
     console.error('❌ Google Sheets READ Engine failed:', err.message);
   }
-  return null; // CHANGE THIS FROM 'EN' TO null
+  return null;
 }
-
 
 // Helper: Check FAQ sheet tab for dynamic keywords matching
 async function checkFAQSheet(incomingText) {
@@ -170,11 +149,9 @@ async function checkFAQSheet(incomingText) {
   return null;
 }
 
-// NEW Helper: Count and log daily total API requests out of 1500 limit
+// Helper: Count and log daily total API requests
 async function logBotUsage() {
   if (!sheetsClient) return;
-  
-  // Get current date string formatted as YYYY-MM-DD
   const todayStr = new Date().toISOString().split('T')[0];
   const MAX_LIMIT = 1500;
   
@@ -189,7 +166,6 @@ async function logBotUsage() {
     let dateRowIndex = -1;
     let currentUsageCount = 0;
 
-    // Search if today's date row entry already exists
     for (let i = 1; i < rows.length; i++) {
       if (rows[i] && rows[i][0] === todayStr) {
         dateRowIndex = i + 1;
@@ -202,26 +178,39 @@ async function logBotUsage() {
     const remainingBalance = MAX_LIMIT - newUsageCount;
 
     if (dateRowIndex !== -1) {
-      // Update existing day stats row counter
       await sheetsClient.spreadsheets.values.update({
         spreadsheetId: SPREADSHEET_ID,
         range: `BotUsageLog!B${dateRowIndex}:C${dateRowIndex}`,
         valueInputOption: 'USER_ENTERED',
         requestBody: { values: [[newUsageCount, remainingBalance]] }
       });
-      console.log(`📈 Bot Usage Log Updated: ${todayStr} | Count: ${newUsageCount} | Remaining: ${remainingBalance}`);
     } else {
-      // Append a fresh date row if it's the first execution of a brand new calendar day
       await sheetsClient.spreadsheets.values.append({
         spreadsheetId: SPREADSHEET_ID,
         range: rangeName,
         valueInputOption: 'USER_ENTERED',
         requestBody: { values: [[todayStr, 1, MAX_LIMIT - 1]] }
       });
-      console.log(`📊 First execution for a new calendar date logged: ${todayStr}`);
     }
   } catch (err) {
     console.error('⚠️ Failed writing metrics to BotUsageLog sheet:', err.message);
+  }
+}
+
+// Helper: Log conversational history
+async function logChatToSheet(psid, userText, botResponse) {
+  if (!sheetsClient) return;
+  try {
+    const timestamp = new Date().toLocaleString();
+    await sheetsClient.spreadsheets.values.append({
+      spreadsheetId: SPREADSHEET_ID,
+      range: 'Sheet1!A:D',
+      valueInputOption: 'USER_ENTERED',
+      requestBody: { values: [[timestamp, psid, userText, botResponse]] }
+    });
+    console.log(`📝 Chat logged to Sheet1: ${psid}`);
+  } catch (err) {
+    console.error('❌ Failed to log chat to Sheet1:', err.message);
   }
 }
 
@@ -238,33 +227,7 @@ app.get('/webhook', (req, res) => {
   res.status(200).send('Server is Up');
 });
 
-
-
-
-
-
-
-//google sheet
-async function logChatToSheet(psid, userText, botResponse) {
-  if (!sheetsClient) return;
-  try {
-    const timestamp = new Date().toLocaleString();
-    await sheetsClient.spreadsheets.values.append({
-      spreadsheetId: SPREADSHEET_ID,
-      range: 'Sheet1!A:D', // Adjust if your columns are different
-      valueInputOption: 'USER_ENTERED',
-      requestBody: { values: [[timestamp, psid, userText, botResponse]] }
-    });
-    console.log(`📝 Chat logged to Sheet1: ${psid}`);
-  } catch (err) {
-    console.error('❌ Failed to log chat to Sheet1:', err.message);
-  }
-}
-
-
-
-
-
+// POST: Primary Webhook Event Consumer
 app.post('/webhook', async (req, res) => {
   const body = req.body;
 
@@ -317,7 +280,7 @@ app.post('/webhook', async (req, res) => {
 
       // --- STAGE 1: HANDLE FIRST-TIME LANGUAGE BUTTON CLICKS ---
       if (payload.startsWith("LANG_")) {
-        const selectedLang = payload.split("_")[1]; // EN, BN, TR, AR
+        const selectedLang = payload.split("_")[1]; 
         await saveUserLanguage(sender_psid, selectedLang);
 
         let introText = "Please select an option from our structural services down below 👇";
@@ -336,17 +299,20 @@ app.post('/webhook', async (req, res) => {
 
         await axios.post(`https://graph.facebook.com/v17.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
           recipient: { id: sender_psid },
-          message: { 
-            text: introText, 
-            quick_replies: currentQuickReplies 
-          }
+          message: { text: introText, quick_replies: currentQuickReplies }
         });
         continue;
       }
 
       // --- STAGE 2: HANDLE STRUCTURAL MAIN MENU ACTIONS ---
       if (payload.startsWith("QUICK_")) {
-        const userLang = await getUserLanguage(sender_psid);
+        let userLang = await getUserLanguage(sender_psid);
+        
+        // FIX 1: If database language comes back null/undefined, override to "BN" (Bengali)
+        if (!userLang || userLang === "undefined" || userLang === "") {
+          userLang = "BN"; 
+        }
+
         let actionResponse = "";
         let currentQuickReplies = quickRepliesBN;
 
@@ -355,28 +321,27 @@ app.post('/webhook', async (req, res) => {
         else if (userLang === 'EN') currentQuickReplies = quickRepliesEN;
 
         if (payload === "QUICK_DONATE") {
-          if (userLang === 'BN') actionResponse = "❤️ আমাদের মানবিক কাজে ডোনেট করতে এবং সাহায্য পাঠাতে আমাদের অফিশিয়াল ওয়েবসাইট ভিジット করুন:\n➡️ https://bangalifoundation.org/";
-          else if (userLang === 'TR') actionResponse = "❤️ İnsani yardım çalışmalarımızı desteklemek ve bağış yapmak için resmi web sitemizi ziyaret edin:\n➡️ https://bangalifoundation.org/";
-          else if (userLang === 'AR') actionResponse = "❤️ لدعم أعمالنا الإنسانية وتقديم التبرعات، يرجى زيارة موقعنا الرسمي:\n➡️ https://bangalifoundation.org/";
-          else actionResponse = "❤️ To support our humanitarian mission and make a donation, please visit our official website:\n➡️ https://bangalifoundation.org/";
-        } else if (payload === "QUICK_VOLUNTEER") {
-          if (userLang === 'BN') actionResponse = "🤝 আমাদের ভলান্টিয়ার টিমে যোগ দিয়ে মানুষের পাশে দাঁড়াতে এখানে আবেদন করুন:\n➡️ https://bangalifoundation.org/become-a-volunteer/";
-          else if (userLang === 'TR') actionResponse = "🤝 Gönüllü ekibimize katılmak ve insanlara destek olmak için buradan başvurun:\n➡️ https://bangalifoundation.org/become-a-volunteer/";
-          else if (userLang === 'AR') actionResponse = "🤝 للانضمام إلى فريق المتطوعين لدينا ومساعدة المحتاجين، تقدم بطلبك هنا:\n➡️ https://bangalifoundation.org/become-a-volunteer/";
-          else actionResponse = "🤝 To join our volunteer team and stand by those in need, apply here:\n➡️ https://bangalifoundation.org/become-a-volunteer/";
-        } else if (payload === "QUICK_HELP") {
-          if (userLang === 'BN') actionResponse = "🆘 আপনার যদি কোনো সহযোগিতার প্রয়োজন থাকে, তবে আপনার সমস্যাটি এখানে লিখে জানান অথবা আমাদের সরাসরি হোয়াটসঅ্যাপ নাম্বারে যোগাযোগ করুন:\n📲 https://wa.me/8801901641140";
-          else if (userLang === 'TR') actionResponse = "🆘 Herhangi bir yardıma ihtiyacınız varsa, lütfen sorununuzu buraya yazın veya doğrudan WhatsApp hattımızdan bizimle iletişime geçin:\n📲 https://wa.me/8801901641140";
-          else if (userLang === 'AR') actionResponse = "🆘 إذا كنت بحاجة إلى أي مساعدة، يرجى كتابة مشكلتك هنا أو التواصل معنا مباشرة عبر الواتساب:\n📲 https://wa.me/8801901641140";
-          else actionResponse = "🆘 If you need any assistance, please describe your issue here or contact our support directly on WhatsApp:\n📲 https://wa.me/8801901641140";
+          if (userLang === 'BN') actionResponse = "❤️ আমাদের মানবিক কাজে ডোনেট করতে এবং আমাদের পাশে দাঁড়াতে নিচের লিংকে ভিジット করুন:\n➡️ https://bangalifoundation.org/support-us/";
+          else if (userLang === 'TR') actionResponse = "❤️ İnsani yardım çalışmalarımıza bağışta bulunmak için lütfen destek sayfamızı ziyaret edin:\n➡️ https://bangalifoundation.org/support-us/";
+          else if (userLang === 'AR') actionResponse = "❤️ لتقديم التبرعات ودعم مسيرتنا الإنسانية، يرجى زيارة صفحة الدعم:\n➡️ https://bangalifoundation.org/support-us/";
+          else actionResponse = "❤️ To support our humanitarian mission and make a donation, please visit our support page:\n➡️ https://bangalifoundation.org/support-us/";
+        } 
+        else if (payload === "QUICK_VOLUNTEER") {
+          if (userLang === 'BN') actionResponse = "🤝 আমাদের ভলান্টিয়ার টিমে যোগ দিয়ে মানুষের পাশে দাঁড়াতে নিচের লিংকে আবেদন করুন:\n➡️ https://bangalifoundation.org/become-a-volunteer/";
+          else if (userLang === 'TR') actionResponse = "🤝 Gönüllü ekibimize katılmak ve sahada destek olmak için buradan başvuru yapabilirsiniz:\n➡️ https://bangalifoundation.org/become-a-volunteer/";
+          else if (userLang === 'AR') actionResponse = "🤝 للانضمام إلى فريق المتطوعين لدينا ومساعدة المجتمعات، تقدم بطلبك عبر الرابط:\n➡️ https://bangalifoundation.org/become-a-volunteer/";
+          else actionResponse = "🤝 To join our volunteer network and stand by those in need, please apply through our link:\n➡️ https://bangalifoundation.org/become-a-volunteer/";
+        } 
+        else if (payload === "QUICK_HELP") {
+          if (userLang === 'BN') actionResponse = "🆘 আপনি যদি কোনো সহযোগিতা পেতে চান বা বেনিফিশিয়ারি হতে চান, তবে নিচের লিংকে ফর্মটি পূরণ করুন:\n➡️ https://bangalifoundation.org/become-a-beneficiary/\n\nঅথবা আমাদের সরাসরি হোয়াটসঅ্যাপ নাম্বারে বিস্তারিত লিখে মেসেজ করুন:\n📲 https://wa.me/8801901641140";
+          else if (userLang === 'TR') actionResponse = "🆘 Yardım almak veya yararlanıcı (beneficiary) olmak istiyorsanız lütfen aşağıdaki formu doldurun:\n➡️ https://bangalifoundation.org/become-a-beneficiary/\n\nYa da doğrudan WhatsApp hattımızdan bizimle iletişime geçin:\n📲 https://wa.me/8801901641140";
+          else if (userLang === 'AR') actionResponse = "🆘 إذا كنت بحاجة إلى مساعدات أو ترغب في التسجيل في قائمة المستفيدين، يرجى تعبئة النموذج التالي:\n➡️ https://bangalifoundation.org/become-a-beneficiary/\n\nأو تواصل معنا مباشرة عبر الواتساب:\n📲 https://wa.me/8801901641140";
+          else actionResponse = "🆘 If you need assistance or want to apply as a beneficiary, please complete the application form here:\n➡️ https://bangalifoundation.org/become-a-beneficiary/\n\nOr drop a detailed message to our official WhatsApp support channel:\n📲 https://wa.me/8801901641140";
         }
 
         await axios.post(`https://graph.facebook.com/v17.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
           recipient: { id: sender_psid },
-          message: { 
-            text: actionResponse,
-            quick_replies: currentQuickReplies
-          }
+          message: { text: actionResponse, quick_replies: currentQuickReplies }
         });
         continue;
       }
@@ -399,7 +364,6 @@ app.post('/webhook', async (req, res) => {
           conversationLang = "EN";
           currentQuickReplies = quickRepliesEN;
         } else {
-          // Check if they have an existing saved language in sheets to keep their menu layout consistent
           const savedLang = await getUserLanguage(sender_psid);
           if (savedLang === 'TR') currentQuickReplies = quickRepliesTR;
           else if (savedLang === 'AR') currentQuickReplies = quickRepliesAR;
@@ -411,10 +375,7 @@ app.post('/webhook', async (req, res) => {
         if (matchedFAQAnswer) {
           await axios.post(`https://graph.facebook.com/v17.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
             recipient: { id: sender_psid },
-            message: { 
-              text: matchedFAQAnswer,
-              quick_replies: currentQuickReplies
-            }
+            message: { text: matchedFAQAnswer, quick_replies: currentQuickReplies }
           });
           await logChatToSheet(sender_psid, text, matchedFAQAnswer);
           continue;
@@ -426,14 +387,19 @@ app.post('/webhook', async (req, res) => {
         if (conversationLang === "AR") targetLanguageName = "Arabic";
         if (conversationLang === "EN") targetLanguageName = "English";
 
+        // FIX 2: Enhanced prompt targeting clear, contextual URL routing matrices
         const systemInstructionText = `You are the official automated assistant for Bangali Foundation (https://bangalifoundation.org/).
         Our primary mission: establishing safe water wells, educational support, and running emergency relief campaigns for underserved communities.
         
-        RULES:
-        1. If the user writes in 'Banglish' (Bangla language using English/Latin alphabets like 'ami jante chai'), understand it perfectly, but ALWAYS reply using proper Bangla script (বাংলা অক্ষর).
-        2. Answer clearly, accurately, and politely in ${targetLanguageName}.
-        3. Always look to guide the user naturally to the main website pages (e.g., https://bangalifoundation.org/ or https://bangalifoundation.org/become-a-volunteer/) whenever they express interest in our programs, donations, or actions.
-        4. If a user asks a convoluted, repetitive, or unresolvable question that doesn't match our mission, gently guide them to connect with our human staff via WhatsApp using this link: https://wa.me/8801901641140`;
+        CRITICAL LINK ROUTING RULES:
+        1. BENEFICIARY / HELP LINK: If the user asks for help, wants financial/medical aid, wants donation items, setup a water pump, or explicitly mentions becoming a beneficiary (keywords: সাহায্য, টাকা, সাহায্য প্রয়োজন, বেনিফিশিয়ারি, সাহায্য চাই, সাহায্য দরকার, help, aid, help me, problem), you MUST provide this exact URL: https://bangalifoundation.org/become-a-beneficiary/
+        2. VOLUNTEER LINK: If the user wants to volunteer, join the foundation team, work with us, or participate in local field operations (keywords: ভলান্টিয়ার, স্বেচ্ছাসেবক, জয়েন করা, টিম, কাজ করতে চাই, volunteer, join), you MUST provide this exact URL: https://bangalifoundation.org/become-a-volunteer/
+        3. DONATION LINK: If the user explicitly wants to make a donation, send money, support campaigns financially, or give zakat/charity (keywords: ডোনেট, টাকা দেওয়া, সাহায্য করা, যাকাত, অনুদান, ফান্ড, donate, donation, send money, charity, zakat), you MUST provide this exact URL: https://bangalifoundation.org/support-us/
+
+        GENERAL CONSTRAINTS:
+        - If the user writes in 'Banglish' (Bangla language using English letters like 'ami sahajjo chai' or 'kivabe help pabo'), understand it perfectly, but ALWAYS respond using proper Bangla script (বাংলা অক্ষর).
+        - Answer clearly, accurately, and politely in ${targetLanguageName}.
+        - If the user sends a repetitive, completely ambiguous message, or an unresolved demand that falls outside your standard rules, guide them smoothly to text our human support staff via WhatsApp here: https://wa.me/8801901641140`;
 
         let aiResponseText = "";
         try {
@@ -467,10 +433,7 @@ app.post('/webhook', async (req, res) => {
 
         await axios.post(`https://graph.facebook.com/v17.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
           recipient: { id: sender_psid },
-          message: { 
-            text: aiResponseText,
-            quick_replies: currentQuickReplies
-          }
+          message: { text: aiResponseText, quick_replies: currentQuickReplies }
         });
         await logChatToSheet(sender_psid, text, aiResponseText);
       }
@@ -479,12 +442,6 @@ app.post('/webhook', async (req, res) => {
     res.sendStatus(404);
   }
 });
-
-
-
-
-
-
 
 const PORT = 3000;
 app.listen(PORT, () => {

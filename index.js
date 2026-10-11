@@ -339,24 +339,14 @@ app.post('/webhook', (req, res) => {
                 }
             } 
             
-            // --- 2. HANDLE TEXT INPUT MESSAGES ---
+            // --- 2. HANDLE TEXT INPUT MESSAGES (Direct & Open) ---
             else if (event.message && event.message.text) {
-                const lang = await getUserLanguage(psid);
-                const isUnlocked = await checkUserUnlocked(psid);
+                // Default to Bengali ('BN') or check if they have a saved preference
+                const lang = await getUserLanguage(psid) || 'BN';
 
-                // Gatekeeper A: No language selected yet
-                if (!lang) {
-                    await sendLanguageSelector(psid, "Please choose your language first to unlock options / কথোপকথন শুরু করতে প্রথমে ভাষা নির্বাচন করুন:");
-                } 
-                // Gatekeeper B: Has language, but hasn't clicked an option yet
-                else if (!isUnlocked) {
-                    await sendVerticalMenu(psid, lang);
-                } 
-                // Passed Gatekeeper: Normal Chat Mode
-                else {
-                    const reply = await getSmartReply(event.message.text, psid, lang);
-                    await sendToMessenger(psid, reply);
-                }
+                // Send their message straight to Gemini/FAQ and log to Neon instantly!
+                const reply = await getSmartReply(event.message.text, psid, lang);
+                await sendToMessenger(psid, reply);
             }
         });
     }

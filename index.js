@@ -232,14 +232,15 @@ async function getSmartReply(userMessage, psid, lang) {
             botResponseText = response.text();
         }
 
-        // 3. LOG THE ENTIRE CONVERSATION TO NEON (Replacing Sheet1 logging)
+        // 3. LOG THE ENTIRE CONVERSATION TO NEON
         await logChatToNeon(psid, userMessage, botResponseText);
 
         return botResponseText;
 
     } catch (error) {
-        console.error('--- ERROR LOG ---');
-        return "I'm having a technical moment. Please try again or email us!";
+        // --- THIS WILL PRINT THE EXACT ERROR IN RENDER LOGS ---
+        console.error('--- DETAILED ERROR LOG ---', error);
+        return `I'm having a technical moment. Error: ${error.message}`;
     }
 }
 

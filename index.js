@@ -187,6 +187,23 @@ async function sendVerticalMenu(psid, selectedLang) {
     } catch (err) { console.error("Error sending vertical menu layout stacks"); }
 }
 
+
+// --- HELPER: LOG CONVERSATIONAL HISTORY TO NEON ---
+async function logChatToNeon(psid, userText, botResponse) {
+    try {
+        const query = `
+            INSERT INTO chat_logs (psid, user_text, bot_response) 
+            VALUES ($1, $2, $3)
+        `;
+        await pool.query(query, [psid, userText, botResponse]);
+        console.log(`📝 Chat logged to Neon Database: ${psid}`);
+    } catch (err) {
+        console.error('❌ Failed to log chat to Neon database:', err.message);
+    }
+}
+
+
+
 // --- CORE: SMART REPLY LOGIC WITH NEON DATABASE LOGGING ---
 async function getSmartReply(userMessage, psid, lang) {
     try {
@@ -215,17 +232,8 @@ async function getSmartReply(userMessage, psid, lang) {
             botResponseText = response.text();
         }
 
-        // 3. AUTOMATICALLY LOG THIS CONVERSATION TO NEON POSTGRESQL DATABASE
-        try {
-            const query = `
-                INSERT INTO chat_logs (psid, user_text, bot_response) 
-                VALUES ($1, $2, $3)
-            `;
-            await pool.query(query, [psid, userMessage, botResponseText]);
-            console.log(`📝 Chat logged to Neon Database: ${psid}`);
-        } catch (dbError) {
-            console.error("❌ Failed to write to Neon chat_logs table:", dbError.message);
-        }
+        // 3. LOG THE ENTIRE CONVERSATION TO NEON (Replacing Sheet1 logging)
+        await logChatToNeon(psid, userMessage, botResponseText);
 
         return botResponseText;
 
@@ -234,6 +242,8 @@ async function getSmartReply(userMessage, psid, lang) {
         return "I'm having a technical moment. Please try again or email us!";
     }
 }
+
+
 
 // --- MESSENGER SENDING ---
 async function sendToMessenger(psid, text) {

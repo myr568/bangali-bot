@@ -1,454 +1,356 @@
+const { Pool } = require('pg');
+
 const express = require('express');
 const bodyParser = require('body-parser');
 const axios = require('axios');
 const { google } = require('googleapis');
-const { GoogleGenAI } = require('@google/genai');
-const fs = require('fs');
-const path = require('path');
+const { GoogleGenerativeAI } = require("@google/generative-ai");
 
 const app = express();
 app.use(bodyParser.json());
 
+// --- CONFIGURATION ---
 const PAGE_ACCESS_TOKEN = process.env.PAGE_ACCESS_TOKEN;
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
-
 const SPREADSHEET_ID = '16kuhcidjptgfxqaB1y0ujeEb59zrewVkUw7o6bVWynw';
-let sheetsClient;
-let googleAuthToken;
 
-const localLangCache = new Map();
-const processedMids = new Map();
-
-async function initializeGoogleAuth() {
-  try {
-    let credentials;
-    if (process.env.GOOGLE_CREDS) {
-      console.log("DEBUG: Parsing GOOGLE_CREDS from environment...");
-      credentials = JSON.parse(process.env.GOOGLE_CREDS.trim());
-    } else {
-      console.log("DEBUG: Loading from local file...");
-      const keyPath = path.join(__dirname, 'YOUR_KEY_FILENAME.json'); 
-      credentials = JSON.parse(fs.readFileSync(keyPath));
+// Neon Database Connection Pool Configuration
+const pool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: {
+        rejectUnauthorized: false
     }
-
-    const auth = google.auth.fromJSON(credentials);
-    const scopedAuth = auth.createScoped(['https://www.googleapis.com/auth/spreadsheets']);
-    await scopedAuth.authorize();
-    googleAuthToken = scopedAuth;
-    sheetsClient = google.sheets({ version: 'v4', auth: googleAuthToken });
-    
-    console.log('✅ Google Sheets Identity established successfully using fromJSON!');
-  } catch (err) {
-    console.error('❌ Authentication failed in initializeGoogleAuth:', err.message);
-  }
-}
-
-initializeGoogleAuth();
-
-app.use((req, res, next) => {
-  res.setHeader('ngrok-skip-browser-warning', 'true');
-  next();
 });
 
-// Helper: Save or update user language selection
-async function saveUserLanguage(psid, languageCode) {
-  const safePsid = String(psid).trim();
-  localLangCache.set(safePsid, languageCode);
-  console.log(`📍 Local memory cache set: ${safePsid} -> ${languageCode}`);
+// Gemini 2.5 Flash Initialization
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+const aiModel = genAI.getGenerativeModel({ 
+    model: "gemini-2.5-flash", 
+    systemInstruction: `
+        You are the official AI assistant for the Bangali Foundation.
+        Website: https://bangalifoundation.org/
+        
+        CRITICAL RULES:
+        1. Always represent https://bangalifoundation.org/ as our official site.
+        2. Our mission is to provide aid, education, and support to underprivileged communities.
+        3. Do NOT confuse us with cultural or heritage-only organizations.
+        4. Treasurer: Md. Romjan.
+        5. For technical issues, contact Mohammad Yasin (mohammadyasin568@gmail.com).
+        
+        TONE: Polite, professional, and concise.
+        LANGUAGE: Always reply in the user's preferred language.
+    `
+});
 
-  if (!sheetsClient) return;
-  try {
-    const rangeName = 'UserPrefs!A:B';
-    const response = await sheetsClient.spreadsheets.values.get({
-      spreadsheetId: SPREADSHEET_ID,
-      range: rangeName,
-    });
-    
-    const rows = response.data.values || [];
-    let userRowIndex = -1;
+// Google Sheets Auth
+let keys = JSON.parse(process.env.GOOGLE_CREDS);
+const client = new google.auth.JWT(
+    keys.client_email, null, keys.private_key,
+    ['https://www.googleapis.com/auth/spreadsheets']
+);
 
-    for (let i = 0; i < rows.length; i++) {
-      if (rows[i] && rows[i][0] && String(rows[i][0]).trim() === safePsid) {
-        userRowIndex = i + 1;
-        break;
-      }
-    }
-
-    if (userRowIndex !== -1) {
-      await sheetsClient.spreadsheets.values.update({
-        spreadsheetId: SPREADSHEET_ID,
-        range: `UserPrefs!B${userRowIndex}`,
-        valueInputOption: 'USER_ENTERED',
-        requestBody: { values: [[languageCode]] }
-      });
-      console.log(`🔄 Google Sheet Updated Successfully: ${safePsid} -> ${languageCode}`);
-    } else {
-      await sheetsClient.spreadsheets.values.append({
-        spreadsheetId: SPREADSHEET_ID,
-        range: rangeName,
-        valueInputOption: 'USER_ENTERED',
-        requestBody: { values: [[safePsid, languageCode]] }
-      });
-      console.log(`💾 Google Sheet Appended (New Entry): ${safePsid} -> ${languageCode}`);
-    }
-  } catch (err) {
-    console.error('❌ Google Sheets UserPrefs WRITE failed:', err.message);
-  }
-}
-
-// Helper: Read user language preference
+// --- HELPER: GET USER LANGUAGE ---
 async function getUserLanguage(psid) {
-  const safePsid = String(psid).trim();
-
-  if (localLangCache.has(safePsid)) {
-    return localLangCache.get(safePsid);
-  }
-
-  if (!sheetsClient) return null;
-  try {
-    const response = await sheetsClient.spreadsheets.values.get({
-      spreadsheetId: SPREADSHEET_ID,
-      range: 'UserPrefs!A:B',
-    });
-    const rows = response.data.values || [];
-    for (const row of rows) {
-      if (row && row[0] && String(row[0]).trim() === safePsid) {
-        localLangCache.set(safePsid, row[1]); 
-        return row[1];
-      }
-    }
-  } catch (err) {
-    console.error('❌ Google Sheets READ Engine failed:', err.message);
-  }
-  return null;
-}
-
-// Helper: Check FAQ sheet tab for dynamic keywords matching
-async function checkFAQSheet(incomingText) {
-  if (!sheetsClient) return null;
-  const cleanInput = incomingText.toLowerCase().trim();
-  try {
-    const response = await sheetsClient.spreadsheets.values.get({
-      spreadsheetId: SPREADSHEET_ID,
-      range: 'FAQ!A:B',
-    });
-    const rows = response.data.values || [];
-    for (const row of rows) {
-      if (row && row[0] && row[1]) {
-        const keyword = row[0].toLowerCase().trim();
-        if (cleanInput.includes(keyword) || keyword.includes(cleanInput)) {
-          console.log(`🎯 FAQ sheet keyword hit found: "${row[0]}"`);
-          return row[1];
+    try {
+        const gsapi = google.sheets({ version: 'v4', auth: client });
+        const response = await gsapi.spreadsheets.values.get({
+            spreadsheetId: SPREADSHEET_ID,
+            range: 'UserPrefs!A:B',
+        });
+        const rows = response.data.values;
+        if (rows) {
+            const userRow = rows.reverse().find(row => row[0] === psid);
+            return userRow ? userRow[1] : null;
         }
-      }
-    }
-  } catch (err) {
-    console.error('⚠️ FAQ sheet tab parsing skipped or not found:', err.message);
-  }
-  return null;
+    } catch (e) { return null; }
 }
 
-// Helper: Count and log daily total API requests
-async function logBotUsage() {
-  if (!sheetsClient) return;
-  const todayStr = new Date().toISOString().split('T')[0];
-  const MAX_LIMIT = 1500;
-  
-  try {
-    const rangeName = 'BotUsageLog!A:C';
-    const response = await sheetsClient.spreadsheets.values.get({
-      spreadsheetId: SPREADSHEET_ID,
-      range: rangeName,
-    });
+// --- LOG LANGUAGE SELECTION ---
+async function logLanguage(psid, lang) {
+    try {
+        const gsapi = google.sheets({ version: 'v4', auth: client });
+        await gsapi.spreadsheets.values.append({
+            spreadsheetId: SPREADSHEET_ID,
+            range: 'UserPrefs!A:B',
+            valueInputOption: 'USER_ENTERED',
+            resource: { values: [[psid, lang]] }
+        });
+    } catch (e) { console.error("Error logging language", e); }
+}
+
+// --- HELPER: CHECK IF USER IS UNLOCKED ---
+async function checkUserUnlocked(psid) {
+    try {
+        const gsapi = google.sheets({ version: 'v4', auth: client });
+        const response = await gsapi.spreadsheets.values.get({
+            spreadsheetId: SPREADSHEET_ID,
+            range: 'UnlockedUsers!A:A',
+        });
+        const rows = response.data.values;
+        if (rows) {
+            return rows.some(row => row[0] === psid);
+        }
+        return false;
+    } catch (e) { return false; }
+}
+
+// --- HELPER: LOG UNLOCKED USER ---
+async function logUnlockedUser(psid) {
+    try {
+        const gsapi = google.sheets({ version: 'v4', auth: client });
+        await gsapi.spreadsheets.values.append({
+            spreadsheetId: SPREADSHEET_ID,
+            range: 'UnlockedUsers!A:A',
+            valueInputOption: 'USER_ENTERED',
+            resource: { values: [[psid]] }
+        });
+    } catch (e) { console.error("Error logging unlocked user", e); }
+}
+
+// --- GLOBAL REUSABLE LANGUAGE SELECTOR (QUICK REPLIES - ALL 4 TOGETHER) ---
+async function sendLanguageSelector(psid, textPrompt) {
+    try {
+        await axios.post(`https://graph.facebook.com/v20.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
+            recipient: { id: psid },
+            message: {
+                text: textPrompt,
+                quick_replies: [
+                    { content_type: "text", title: "English 🇬🇧", payload: "LANG_EN" },
+                    { content_type: "text", title: "বাংলা 🇧🇩", payload: "LANG_BN" },
+                    { content_type: "text", title: "Türkçe 🇹🇷", payload: "LANG_TR" },
+                    { content_type: "text", title: "العربية 🇸🇦", payload: "LANG_AR" }
+                ]
+            }
+        });
+    } catch (e) { console.error("Error sending language selection Quick Replies menu"); }
+}
+
+// --- GLOBAL REUSABLE VERTICAL MENU FUNCTION (STACKED CARDS) ---
+async function sendVerticalMenu(psid, selectedLang) {
+    const lang = selectedLang || 'EN';
     
-    const rows = response.data.values || [];
-    let dateRowIndex = -1;
-    let currentUsageCount = 0;
+    const localizedPrompts = {
+        'EN': { card1: "Main Options", card2: "More Activities", welcome: "Please select an option from our official menus below to continue:" },
+        'BN': { card1: "প্রধান বিকল্পসমূহ", card2: "অন্যান্য কার্যক্রম", welcome: "সামনে অগ্রসর হতে অনুগ্রহ করে নিচের অফিসিয়াল লিঙ্কসমূহ থেকে যেকোনো একটি বিকল্প বেছে নিন:" },
+        'TR': { card1: "Ana Seçenekler", card2: "Diğer Faaliyetler", welcome: "Devam etmek için lütfen aşağıdaki resmi seçeneklerimizden birini seçin:" },
+        'AR': { card1: "الخيارات الرئيسية", card2: "المزيد من الأنشطة", welcome: "يرجى اختيار أحد الخيارات من قوائمنا الرسمية أدناه للمتابعة:" }
+    };
 
-    for (let i = 1; i < rows.length; i++) {
-      if (rows[i] && rows[i][0] === todayStr) {
-        dateRowIndex = i + 1;
-        currentUsageCount = parseInt(rows[i][1], 10) || 0;
-        break;
-      }
-    }
+    const translations = {
+        'EN': { donate: "Donate 💰", volunteer: "Be a Volunteer 🤝", aid: "Need Help/Aid? 🙋‍♂️", partner: "Be a Partner 🏢", projects: "Our Projects 📂" },
+        'BN': { donate: "দান করুন 💰", volunteer: "স্বেচ্ছাসেবক হোন 🤝", aid: "সাহায্য প্রয়োজন? 🙋‍♂️", partner: "পার্টনার হোন 🏢", projects: "আমাদের প্রকল্পসমূহ 📂" },
+        'TR': { donate: "Bağış Yap 💰", volunteer: "Gönüllü Ol 🤝", aid: "Yardım Lazım Mı? 🙋‍♂️", partner: "Ortak Ol 🏢", projects: "Projelerimiz 📂" },
+        'AR': { donate: "تبرع الآن 💰", volunteer: "كن متطوعاً 🤝", aid: "هل تحتاج مساعدة؟ 🙋‍♂️", partner: "كن شريكاً 🏢", projects: "مشاريعنا 📂" }
+    };
 
-    const newUsageCount = currentUsageCount + 1;
-    const remainingBalance = MAX_LIMIT - newUsageCount;
+    const currentLang = localizedPrompts[lang];
+    const labels = translations[lang];
 
-    if (dateRowIndex !== -1) {
-      await sheetsClient.spreadsheets.values.update({
-        spreadsheetId: SPREADSHEET_ID,
-        range: `BotUsageLog!B${dateRowIndex}:C${dateRowIndex}`,
-        valueInputOption: 'USER_ENTERED',
-        requestBody: { values: [[newUsageCount, remainingBalance]] }
-      });
-    } else {
-      await sheetsClient.spreadsheets.values.append({
-        spreadsheetId: SPREADSHEET_ID,
-        range: rangeName,
-        valueInputOption: 'USER_ENTERED',
-        requestBody: { values: [[todayStr, 1, MAX_LIMIT - 1]] }
-      });
-    }
-  } catch (err) {
-    console.error('⚠️ Failed writing metrics to BotUsageLog sheet:', err.message);
-  }
+    try {
+        await sendToMessenger(psid, currentLang.welcome);
+
+        // Card 1
+        await axios.post(`https://graph.facebook.com/v20.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
+            recipient: { id: psid },
+            message: {
+                attachment: {
+                    type: "template",
+                    payload: {
+                        template_type: "button",
+                        text: currentLang.card1,
+                        buttons: [
+                            { type: "postback", title: labels.donate, payload: "CLICK_DONATE" },
+                            { type: "postback", title: labels.volunteer, payload: "CLICK_VOLUNTEER" },
+                            { type: "postback", title: labels.aid, payload: "CLICK_AID" }
+                        ]
+                    }
+                }
+            }
+        });
+
+        // Card 2
+        await axios.post(`https://graph.facebook.com/v20.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
+            recipient: { id: psid },
+            message: {
+                attachment: {
+                    type: "template",
+                    payload: {
+                        template_type: "button",
+                        text: currentLang.card2,
+                        buttons: [
+                            { type: "postback", title: labels.partner, payload: "CLICK_PARTNER" },
+                            { type: "postback", title: labels.projects, payload: "CLICK_PROJECTS" }
+                        ]
+                    }
+                }
+            }
+        });
+    } catch (err) { console.error("Error sending vertical menu layout stacks"); }
 }
 
-// Helper: Log conversational history
-async function logChatToSheet(psid, userText, botResponse) {
-  if (!sheetsClient) return;
-  try {
-    const timestamp = new Date().toLocaleString();
-    await sheetsClient.spreadsheets.values.append({
-      spreadsheetId: SPREADSHEET_ID,
-      range: 'Sheet1!A:D',
-      valueInputOption: 'USER_ENTERED',
-      requestBody: { values: [[timestamp, psid, userText, botResponse]] }
-    });
-    console.log(`📝 Chat logged to Sheet1: ${psid}`);
-  } catch (err) {
-    console.error('❌ Failed to log chat to Sheet1:', err.message);
-  }
-}
+// --- CORE: SMART REPLY LOGIC WITH NEON DATABASE LOGGING ---
+async function getSmartReply(userMessage, psid, lang) {
+    try {
+        await client.authorize();
+        const gsapi = google.sheets({ version: 'v4', auth: client });
 
-// GET: Webhook Verification
-app.get('/webhook', (req, res) => {
-  const mode = req.query['hub.mode'];
-  const token = req.query['hub.verify_token'];
-  const challenge = req.query['hub.challenge'];
+        let botResponseText = "";
 
-  if (mode === 'subscribe' && token === 'bangali_foundation_2026') {
-    console.log('✅ Webhook Verified Successfully');
-    return res.status(200).send(challenge);
-  }
-  res.status(200).send('Server is Up');
-});
-
-// POST: Primary Webhook Event Consumer
-app.post('/webhook', async (req, res) => {
-  const body = req.body;
-
-  if (body.object === 'page') {
-    res.status(200).send('EVENT_RECEIVED');
-
-    for (const entry of body.entry) {
-      if (!entry.messaging || entry.messaging.length === 0) continue;
-
-      const webhook_event = entry.messaging[0];
-      if (webhook_event.delivery || webhook_event.read || webhook_event.message?.is_echo) continue;
-
-      const sender_psid = webhook_event.sender?.id;
-      const messageId = webhook_event.message?.mid || webhook_event.postback?.mid;
-
-      if (messageId) {
-        if (processedMids.has(messageId)) continue;
-        processedMids.set(messageId, true);
-        setTimeout(() => processedMids.delete(messageId), 120000);
-      }
-
-      const text = webhook_event.message?.text || "";
-      const payload = webhook_event.message?.quick_reply?.payload || webhook_event.postback?.payload || "";
-      if (text || payload) logBotUsage();
-
-      // --- STRUCTURAL BUTTONS DEFINITIONS ---
-      const quickRepliesBN = [
-        { content_type: "text", title: "❤️ ডোনেট করুন", payload: "QUICK_DONATE" },
-        { content_type: "text", title: "🤝 ভলান্টিয়ার হোন", payload: "QUICK_VOLUNTEER" },
-        { content_type: "text", title: "🆘 সাহায্য প্রয়োজন", payload: "QUICK_HELP" }
-      ];
-
-      const quickRepliesEN = [
-        { content_type: "text", title: "❤️ Donate", payload: "QUICK_DONATE" },
-        { content_type: "text", title: "🤝 Volunteer", payload: "QUICK_VOLUNTEER" },
-        { content_type: "text", title: "🆘 Need Help", payload: "QUICK_HELP" }
-      ];
-
-      const quickRepliesTR = [
-        { content_type: "text", title: "❤️ Bağış Yap", payload: "QUICK_DONATE" },
-        { content_type: "text", title: "🤝 Gönüllü Ol", payload: "QUICK_VOLUNTEER" },
-        { content_type: "text", title: "🆘 Yardım Alın", payload: "QUICK_HELP" }
-      ];
-
-      const quickRepliesAR = [
-        { content_type: "text", title: "❤️ التبرع والدعم", payload: "QUICK_DONATE" },
-        { content_type: "text", title: "🤝 كن متطوعاً", payload: "QUICK_VOLUNTEER" },
-        { content_type: "text", title: "🆘 طلب مساعدة", payload: "QUICK_HELP" }
-      ];
-
-      // --- STAGE 1: HANDLE FIRST-TIME LANGUAGE BUTTON CLICKS ---
-      if (payload.startsWith("LANG_")) {
-        const selectedLang = payload.split("_")[1]; 
-        await saveUserLanguage(sender_psid, selectedLang);
-
-        // FIXED: The structural choices default cleanly to Bangla options unless explicitly overridden
-        let introText = "অনুগ্রহ করে নিচে দেওয়া আমাদের সেবাসমূহ থেকে যেকোনো একটি অপশন বেছে নিন 👇";
-        let currentQuickReplies = quickRepliesBN;
-
-        if (selectedLang === 'EN') {
-          introText = "Please select an option from our structural services down below 👇";
-          currentQuickReplies = quickRepliesEN;
-        } else if (selectedLang === 'TR') {
-          introText = "Lütfen devam etmek için aşağıdaki hizmetlerimizden bir seçenek belirleyin 👇";
-          currentQuickReplies = quickRepliesTR;
-        } else if (selectedLang === 'AR') {
-          introText = "يرجى تحديد أحد خدماتنا أدناه للمتابعة 👇";
-          currentQuickReplies = quickRepliesAR;
-        }
-
-        await axios.post(`https://graph.facebook.com/v17.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
-          recipient: { id: sender_psid },
-          message: { text: introText, quick_replies: currentQuickReplies }
+        // 1. Check FAQ
+        const faqRes = await gsapi.spreadsheets.values.get({
+            spreadsheetId: SPREADSHEET_ID,
+            range: 'FAQ!A2:B500',
         });
-        continue;
-      }
-
-      // --- STAGE 2: HANDLE STRUCTURAL MAIN MENU ACTIONS ---
-      if (payload.startsWith("QUICK_")) {
-        let userLang = await getUserLanguage(sender_psid);
-        
-        // FIXED: Defaults cleanly to "BN" (Bengali) if language configuration isn't tracked or stored yet
-        if (!userLang || userLang === "undefined" || userLang === "") {
-          userLang = "BN"; 
+        const rows = faqRes.data.values;
+        if (rows) {
+            const match = rows.find(row => userMessage.toLowerCase().includes(row[0].toLowerCase()));
+            if (match) {
+                botResponseText = match[1]; // Returns FAQ answer (Doesn't use Gemini API)
+            }
         }
 
-        let actionResponse = "";
-        let currentQuickReplies = quickRepliesBN;
-
-        if (userLang === 'TR') currentQuickReplies = quickRepliesTR;
-        else if (userLang === 'AR') currentQuickReplies = quickRepliesAR;
-        else if (userLang === 'EN') currentQuickReplies = quickRepliesEN;
-
-        if (payload === "QUICK_DONATE") {
-          if (userLang === 'BN') actionResponse = "❤️ আমাদের মানবিক কাজে ডোনেট করতে এবং আমাদের পাশে দাঁড়াতে নিচের লিংকে ভিジット করুন:\n➡️ https://bangalifoundation.org/support-us/";
-          else if (userLang === 'TR') actionResponse = "❤️ İnsani yardım çalışmalarımıza bağışta bulunmak için lütfen destek sayfamızı ziyaret edin:\n➡️ https://bangalifoundation.org/support-us/";
-          else if (userLang === 'AR') actionResponse = "❤️ لتقديم التبرعات ودعم مسيرتنا الإنسانية، يرجى زيارة صفحة الدعم:\n➡️ https://bangalifoundation.org/support-us/";
-          else actionResponse = "❤️ To support our humanitarian mission and make a donation, please visit our support page:\n➡️ https://bangalifoundation.org/support-us/";
-        } 
-        else if (payload === "QUICK_VOLUNTEER") {
-          if (userLang === 'BN') actionResponse = "🤝 আমাদের ভলান্টিয়ার টিমে যোগ দিয়ে মানুষের পাশে দাঁড়াতে নিচের লিংকে আবেদন করুন:\n➡️ https://bangalifoundation.org/become-a-volunteer/";
-          else if (userLang === 'TR') actionResponse = "🤝 Gönüllü ekibimize katılmak ve sahada destek olmak için buradan başvuru yapabilirsiniz:\n➡️ https://bangalifoundation.org/become-a-volunteer/";
-          else if (userLang === 'AR') actionResponse = "🤝 للانضمام إلى فريق المتطوعين لدينا ومساعدة المجتمعات، تقدم بطلبك عبر الرابط:\n➡️ https://bangalifoundation.org/become-a-volunteer/";
-          else actionResponse = "🤝 To join our volunteer network and stand by those in need, please apply through our link:\n➡️ https://bangalifoundation.org/become-a-volunteer/";
-        } 
-        else if (payload === "QUICK_HELP") {
-          if (userLang === 'BN') actionResponse = "🆘 আপনি যদি কোনো সহযোগিতা পেতে চান বা বেনিফিশিয়ারি হতে চান, তবে নিচের লিংকে ফর্মটি পূরণ করুন:\n➡️ https://bangalifoundation.org/become-a-beneficiary/\n\nঅথবা আমাদের সরাসরি হোয়াটসঅ্যাপ নাম্বারে বিস্তারিত লিখে মেসেজ করুন:\n📲 https://wa.me/8801901641140";
-          else if (userLang === 'TR') actionResponse = "🆘 Yardım almak veya yararlanıcı (beneficiary) olmak istiyorsanız lütfen aşağıdaki formu doldurun:\n➡️ https://bangalifoundation.org/become-a-beneficiary/\n\nYa da doğrudan WhatsApp hattımızdan bizimle iletişime geçin:\n📲 https://wa.me/8801901641140";
-          else if (userLang === 'AR') actionResponse = "🆘 إذا كنت بحاجة إلى مساعدات أو ترغب في التسجيل في قائمة المستفيدين، يرجى تعبئة النموذج التالي:\n➡️ https://bangalifoundation.org/become-a-beneficiary/\n\nأو تواصل معنا مباشرة عبر الواتساب:\n📲 https://wa.me/8801901641140";
-          else actionResponse = "🆘 If you need assistance or want to apply as a beneficiary, please complete the application form here:\n➡️ https://bangalifoundation.org/become-a-beneficiary/\n\nOr drop a detailed message to our official WhatsApp support channel:\n📲 https://wa.me/8801901641140";
+        // 2. If no FAQ match, call Gemini 2.5 Flash
+        if (!botResponseText) {
+            const result = await aiModel.generateContent(`User Language: ${lang}. Message: ${userMessage}`);
+            const response = await result.response;
+            botResponseText = response.text();
         }
 
-        await axios.post(`https://graph.facebook.com/v17.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
-          recipient: { id: sender_psid },
-          message: { text: actionResponse, quick_replies: currentQuickReplies }
-        });
-        continue;
-      }
-
-      // --- STAGE 3: PROCESS INCOMING USER TEXT MESSAGES ---
-      if (text) {
-        // FIXED: The target contextual option list structure now defaults directly to quickRepliesBN
-        let conversationLang = "BN"; 
-        let currentQuickReplies = quickRepliesBN;
-        
-        const hasArabic = /[\u0600-\u06FF]/.test(text);
-        const hasTurkish = /[çğıöşüÇĞİÖŞÜ]/.test(text);
-
-        if (hasArabic) {
-          conversationLang = "AR";
-          currentQuickReplies = quickRepliesAR; 
-        } else if (hasTurkish) {
-          conversationLang = "TR";
-          currentQuickReplies = quickRepliesTR;
-        } else if (/^(hello|hi|hey|good morning|dear|sir|english|info)/i.test(text.trim())) {
-          conversationLang = "EN";
-          currentQuickReplies = quickRepliesEN;
-        } else {
-          const savedLang = await getUserLanguage(sender_psid);
-          if (savedLang === 'TR') currentQuickReplies = quickRepliesTR;
-          else if (savedLang === 'AR') currentQuickReplies = quickRepliesAR;
-          else if (savedLang === 'EN') currentQuickReplies = quickRepliesEN;
-          // No else needed here anymore; fallback remains bound to quickRepliesBN natively
-        }
-
-        // STEP 1: Search FAQ Sheet First
-        const matchedFAQAnswer = await checkFAQSheet(text);
-        if (matchedFAQAnswer) {
-          await axios.post(`https://graph.facebook.com/v17.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
-            recipient: { id: sender_psid },
-            message: { text: matchedFAQAnswer, quick_replies: currentQuickReplies }
-          });
-          await logChatToSheet(sender_psid, text, matchedFAQAnswer);
-          continue;
-        }
-
-        // STEP 2: Intelligent Gemini Processing
-        let targetLanguageName = "Bangla";
-        if (conversationLang === "TR") targetLanguageName = "Turkish";
-        if (conversationLang === "AR") targetLanguageName = "Arabic";
-        if (conversationLang === "EN") targetLanguageName = "English";
-
-        const systemInstructionText = `You are the official automated assistant for Bangali Foundation (https://bangalifoundation.org/).
-        Our primary mission: establishing safe water wells, educational support, and running emergency relief campaigns for underserved communities.
-        
-        CRITICAL LINK ROUTING RULES:
-        1. BENEFICIARY / HELP LINK: If the user asks for help, wants financial/medical aid, wants donation items, setup a water pump, or explicitly mentions becoming a beneficiary (keywords: সাহায্য, টাকা, সাহায্য প্রয়োজন, বেনিফিশিয়ারি, সাহায্য চাই, সাহায্য দরকার, help, aid, help me, problem), you MUST provide this exact URL: https://bangalifoundation.org/become-a-beneficiary/
-        2. VOLUNTEER LINK: If the user wants to volunteer, join the foundation team, work with us, or participate in local field operations (keywords: ভলান্টিয়ার, স্বেচ্ছাসেবক, জয়েন করা, টিম, কাজ করতে চাই, volunteer, join), you MUST provide this exact URL: https://bangalifoundation.org/become-a-volunteer/
-        3. DONATION LINK: If the user explicitly wants to make a donation, send money, support campaigns financially, or give zakat/charity (keywords: ডোনেট, টাকা দেওয়া, সাহায্য করা, যাকাত, অনুদান, ফান্ড, donate, donation, send money, charity, zakat), you MUST provide this exact URL: https://bangalifoundation.org/support-us/
-
-        GENERAL CONSTRAINTS:
-        - If the user writes in 'Banglish' (Bangla language using English letters like 'ami sahajjo chai' or 'kivabe help pabo'), understand it perfectly, but ALWAYS respond using proper Bangla script (বাংলা অক্ষর).
-        - Answer clearly, accurately, and politely in ${targetLanguageName}.
-        - If the user sends a repetitive, completely ambiguous message, or an unresolved demand that falls outside your standard rules, guide them smoothly to text our human support staff via WhatsApp here: https://wa.me/8801901641140`;
-
-        let aiResponseText = "";
+        // 3. AUTOMATICALLY LOG THIS CONVERSATION TO NEON POSTGRESQL DATABASE
         try {
-          const result = await ai.models.generateContent({
-            model: 'models/gemini-2.5-flash',
-            contents: text,
-            config: { systemInstruction: systemInstructionText, temperature: 0.3 }
-          });
-          aiResponseText = result.text || "";
-        } catch (error) {
-          await new Promise(resolve => setTimeout(resolve, 1500));
-          try {
-            const retryResult = await ai.models.generateContent({
-              model: 'models/gemini-2.5-flash',
-              contents: text,
-              config: { systemInstruction: systemInstructionText, temperature: 0.3 }
-            });
-            aiResponseText = retryResult.text || "";
-          } catch (retryError) {
-            aiResponseText = conversationLang === "BN" 
-              ? "দুঃখিত, এই মুহূর্তে উত্তর দিতে সমস্যা হচ্ছে। অনুগ্রহ করে আমাদের হোয়াটসঅ্যাপে মেসেজ করুন: https://wa.me/8801901641140"
-              : "I'm having trouble processing that right now. Please message our support on WhatsApp: https://wa.me/8801901641140";
-          }
+            const query = `
+                INSERT INTO chat_logs (psid, user_text, bot_response) 
+                VALUES ($1, $2, $3)
+            `;
+            await pool.query(query, [psid, userMessage, botResponseText]);
+            console.log(`📝 Chat logged to Neon Database: ${psid}`);
+        } catch (dbError) {
+            console.error("❌ Failed to write to Neon chat_logs table:", dbError.message);
         }
 
-        if (!aiResponseText || aiResponseText.length < 5) {
-          aiResponseText = conversationLang === "BN"
-            ? "আপনার প্রশ্নের সঠিক উত্তরটি পেতে আমাদের সরাসরি হোয়াটসঅ্যাপ নাম্বারে যোগাযোগ করুন: https://wa.me/8801901641140"
-            : "To assist you better with this matter, please contact our helpline on WhatsApp directly: https://wa.me/8801901641140";
-        }
+        return botResponseText;
 
-        await axios.post(`https://graph.facebook.com/v17.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
-          recipient: { id: sender_psid },
-          message: { text: aiResponseText, quick_replies: currentQuickReplies }
-        });
-        await logChatToSheet(sender_psid, text, aiResponseText);
-      }
+    } catch (error) {
+        console.error('--- ERROR LOG ---');
+        return "I'm having a technical moment. Please try again or email us!";
     }
-  } else {
-    res.sendStatus(404);
-  }
+}
+
+// --- MESSENGER SENDING ---
+async function sendToMessenger(psid, text) {
+    try {
+        await axios.post(`https://graph.facebook.com/v20.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
+            recipient: { id: psid },
+            message: { text: text }
+        });
+    } catch (e) { console.error("Messenger Post Error"); }
+}
+
+// --- WEBHOOKS ---
+app.get('/webhook', (req, res) => {
+    if (req.query['hub.verify_token'] === 'bangali_foundation_2026') {
+        res.send(req.query['hub.challenge']);
+    }
 });
 
-const PORT = 3000;
-app.listen(PORT, () => {
-    console.log('------------------------------------');
-    console.log(`🚀 SUCCESS: Bangali Foundation Bot is live!`);
-    console.log(`📡 Listening on Port: ${PORT}`);
-    console.log('------------------------------------');
+app.post('/webhook', (req, res) => {
+    const body = req.body;
+    if (body.object === 'page') {
+        res.status(200).send('EVENT_RECEIVED');
+        body.entry.forEach(async (entry) => {
+            if (!entry.messaging) return;
+            const event = entry.messaging[0];
+            const psid = event.sender.id;
+
+            // --- 1. HANDLE QUICK REPLIES & POSTBACK EVENTS ---
+            let payload = null;
+            if (event.postback) payload = event.postback.payload;
+            if (event.message && event.message.quick_reply) payload = event.message.quick_reply.payload;
+
+            if (payload) {
+                // Scenario A: Get Started click
+                if (payload === 'GET_STARTED_PAYLOAD') {
+                    await sendLanguageSelector(psid, "Please select your preferred language / অনুগ্রহ করে আপনার পছন্দের ভাষা নির্বাচন করুন:");
+                } 
+                // Scenario B: Language Chosen
+                else if (payload.startsWith('LANG_')) {
+                    const langMap = { 'LANG_EN': 'EN', 'LANG_BN': 'BN', 'LANG_TR': 'TR', 'LANG_AR': 'AR' };
+                    const selected = langMap[payload] || 'EN';
+                    await logLanguage(psid, selected);
+                    await sendVerticalMenu(psid, selected);
+                }
+                // Scenario C: Menu Options Clicked
+                else if (payload.startsWith('CLICK_')) {
+                    const lang = await getUserLanguage(psid) || 'EN';
+                    
+                    const optionLinks = {
+                        'CLICK_DONATE': {
+                            'EN': "Thank you for your generosity! Click here to make a donation directly: https://bangalifoundation.org/support-us/",
+                            'BN': "আপনার উদারতার জন্য ধন্যবাদ! সরাসরি দান করতে এখানে ক্লিক করুন: https://bangalifoundation.org/support-us/",
+                            'TR': "Cömertliğiniz için teşekkür ederiz! Doğrudan bağış yapmak için buraya tıklayın: https://bangalifoundation.org/support-us/",
+                            'AR': "شكراً لكرمك! انقر هنا لتقديم التبرع مباشرة: https://bangalifoundation.org/support-us/"
+                        },
+                        'CLICK_VOLUNTEER': {
+                            'EN': "Click the link https://bangalifoundation.org/become-a-volunteer/ to fill up the form to be our volunteer.",
+                            'BN': "আমাদের স্বেচ্ছাসেবক হতে ফর্মটি পূরণ করতে এই লিঙ্কে ক্লিক করুন: https://bangalifoundation.org/become-a-volunteer/",
+                            'TR': "Gönüllümüz olmak üzere formu doldurmak için şu bağlantıya tıklayın: https://bangalifoundation.org/become-a-volunteer/",
+                            'AR': "انقر على الرابط لتعبئة النموذج لتصبح متطوعاً معنا: https://bangalifoundation.org/become-a-volunteer/"
+                        },
+                        'CLICK_AID': {
+                            'EN': "Click the link https://bangalifoundation.org/become-a-beneficiary/ to become a beneficiary.",
+                            'BN': "সুবিধাভোগী বা সাহায্য পেতে এই লিঙ্কে ক্লিক করে আবেদন করুন: https://bangalifoundation.org/become-a-beneficiary/",
+                            'TR': "Yararlanıcı (yardım alan) olmak için şu bağlantıya tıklayın: https://bangalifoundation.org/become-a-beneficiary/",
+                            'AR': "انقر على الرابط لتصبح مستفيداً من المساعدات: https://bangalifoundation.org/become-a-beneficiary/"
+                        },
+                        'CLICK_PARTNER': {
+                            'EN': "Fill in the form in the following link to become a partner: https://bangalifoundation.org/become-a-partner/",
+                            'BN': "আমাদের পার্টনার বা সহযোগী হতে এই লিঙ্কের ফর্মটি পূরণ করুন: https://bangalifoundation.org/become-a-partner/",
+                            'TR': "Ortak veya paydaş olmak için aşağıdaki bağlantıda yer alan formu doldurun: https://bangalifoundation.org/become-a-partner/",
+                            'AR': "يرجى تعبئة النموذج الموجود في الرابط التالي لتصبح شريكاً لنا: https://bangalifoundation.org/become-a-partner/"
+                        },
+                        'CLICK_PROJECTS': {
+                            'EN': "Click here to learn all about our current projects and initiatives: https://bangalifoundation.org/our-initiatives/",
+                            'BN': "আমাদের চলমান প্রকল্প ও উদ্যোগগুলি সম্পর্কে জানতে এখানে ক্লিক করুন: https://bangalifoundation.org/our-initiatives/",
+                            'TR': "Mevcut projelerimiz ve girişimlerimiz hakkında bilgi edinmek için buraya tıklayın: https://bangalifoundation.org/our-initiatives/",
+                            'AR': "انقر هنا للتعرف على جميع مشاريعنا ومبادراتنا الحالية: https://bangalifoundation.org/our-initiatives/"
+                        }
+                    };
+
+                    const textReply = optionLinks[payload][lang] || optionLinks[payload]['EN'];
+                    await sendToMessenger(psid, textReply);
+                    await logUnlockedUser(psid);
+                    
+                    const unlockAlert = {
+                        'EN': "🔒 Menu Completed! You can now ask any question or type freely to talk with our assistant.",
+                        'BN': "🔒 মেনু সম্পন্ন হয়েছে! এখন আপনি যেকোনো প্রশ্ন জিজ্ঞাসা করতে পারেন বা আমাদের সহকারীর সাথে চ্যাট করতে পারেন।",
+                        'TR': "🔒 Menü Tamamlandı! Artık asistanımızla konuşmak için istediğiniz soruyu sorabilir veya serbestçe yazabilirsiniz.",
+                        'AR': "🔒 اكتملت القائمة! يمكنك الآن طرح أي سؤال أو الكتابة بحرية للتحدث مع مساعدنا."
+                    };
+                    await sendToMessenger(psid, unlockAlert[lang]);
+                }
+            } 
+            
+            // --- 2. HANDLE TEXT INPUT MESSAGES ---
+            else if (event.message && event.message.text) {
+                const lang = await getUserLanguage(psid);
+                const isUnlocked = await checkUserUnlocked(psid);
+
+                // Gatekeeper A: No language selected yet
+                if (!lang) {
+                    await sendLanguageSelector(psid, "Please choose your language first to unlock options / কথোপকথন শুরু করতে প্রথমে ভাষা নির্বাচন করুন:");
+                } 
+                // Gatekeeper B: Has language, but hasn't clicked an option yet
+                else if (!isUnlocked) {
+                    await sendVerticalMenu(psid, lang);
+                } 
+                // Passed Gatekeeper: Normal Chat Mode
+                else {
+                    const reply = await getSmartReply(event.message.text, psid, lang);
+                    await sendToMessenger(psid, reply);
+                }
+            }
+        });
+    }
 });
+
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, () => console.log(`🚀 Bangali Bot with Neon DB Logging is Live!`));
